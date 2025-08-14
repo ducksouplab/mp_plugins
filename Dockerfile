@@ -1,5 +1,5 @@
-# Build MediaPipe Face Landmarker GStreamer plugin using the same Ducksoup base.
-# Produces /app/plugins/libgstfacelandmarks.so inside the image.
+# Build MediaPipe Mozza MP (MLS deformation) plugin.
+# Produces /app/plugins/libgstmozzamp.so
 
 FROM ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10 AS builder
 
@@ -7,10 +7,11 @@ ARG MEDIAPIPE_TAG=v0.10.26
 ARG BAZEL_VERSION=6.5.0
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Toolchain + minimal Python for Bazel's hermetic rules
+# Toolchain + OpenCV (imgwarp needs core/imgproc)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git pkg-config build-essential \
     python3 python3-numpy libglib2.0-dev \
+    libopencv-core-dev libopencv-imgproc-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Bazel
@@ -18,29 +19,38 @@ RUN curl -fsSL -o /usr/local/bin/bazel \
     https://releases.bazel.build/${BAZEL_VERSION}/release/bazel-${BAZEL_VERSION}-linux-x86_64 \
  && chmod +x /usr/local/bin/bazel
 
-WORKDIR /opt/gst-facelandmarks
+WORKDIR /opt/gst-mozzamp
 
 # MediaPipe sources
 RUN git clone --depth=1 --branch ${MEDIAPIPE_TAG} \
     https://github.com/google-ai-edge/mediapipe.git mediapipe-src
 
-# Your plugin source
-COPY src/gstfacelandmarks.cpp mediapipe-src/gstfacelandmarks/gstfacelandmarks.cpp
+# -----------------------------------------------------------------------------
+# Bring in your plugin sources (must exist in build context)
+# -----------------------------------------------------------------------------
+COPY src/gstmozzamp.cpp            mediapipe-src/gstmozzamp/gstmozzamp.cpp
+COPY src/dfm.hpp                   mediapipe-src/gstmozzamp/dfm.hpp
+COPY src/dfm.cpp                   mediapipe-src/gstmozzamp/dfm.cpp
+COPY src/deform_utils.hpp          mediapipe-src/gstmozzamp/deform_utils.hpp
+COPY src/deform_utils.cpp          mediapipe-src/gstmozzamp/deform_utils.cpp
+# Already unzipped MLS library:
+COPY imgwarp/                      mediapipe-src/gstmozzamp/imgwarp/
 
-# Vendor only the GStreamer/GLib headers into a safe Bazel package.
+# -----------------------------------------------------------------------------
+# Vendor GStreamer/GLib headers into a Bazel-friendly package
+# -----------------------------------------------------------------------------
 RUN bash -eux <<'BASH'
 cd mediapipe-src
-
 mkdir -p third_party/sysroot_gst/include \
          third_party/sysroot_gst/lib/glib-2.0/include
 
-# NOTE: GStreamer headers live under /opt/gstreamer in your base image.
+# Headers from the Ducksoup base image
 cp -a /opt/gstreamer/include/gstreamer-1.0 third_party/sysroot_gst/include/
 cp -a /usr/include/glib-2.0               third_party/sysroot_gst/include/
 cp -a /usr/lib/x86_64-linux-gnu/glib-2.0/include/* \
       third_party/sysroot_gst/lib/glib-2.0/include/
 
-# Define cc_libraries for GLib and GStreamer.
+# Define Bazel targets for GLib and GStreamer
 cat > third_party/sysroot_gst/BUILD <<'EOF'
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
@@ -67,55 +77,106 @@ cc_library(
         "lib/glib-2.0/include",
     ],
     deps = [":glib"],
-    # Ensure linker finds libs under /opt/gstreamer.
     linkopts = ["-L/opt/gstreamer/lib/x86_64-linux-gnu",
                 "-lgstvideo-1.0", "-lgstbase-1.0", "-lgstreamer-1.0"],
     visibility = ["//visibility:public"],
 )
 EOF
+BASH
 
-# Plugin BUILD rule: don't force OpenCV; let MediaPipe decide.
-mkdir -p gstfacelandmarks
-cat > gstfacelandmarks/BUILD <<'EOF'
-load("@rules_cc//cc:defs.bzl", "cc_binary")
+# -----------------------------------------------------------------------------
+# Create the BUILD file for gstmozzamp inside the image
+# Use a cc_library for headers so Bazel stages them into the sandbox.
+# -----------------------------------------------------------------------------
+RUN bash -eux <<'BASH'
+cd mediapipe-src/gstmozzamp
 
+cat > BUILD <<'EOF'
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary")
+
+# imgwarp MLS library from local folder
+cc_library(
+    name = "imgwarp",
+    srcs = glob([
+        "imgwarp/**/*.cc",
+        "imgwarp/**/*.cpp",
+        "imgwarp/**/*.c",
+    ]),
+    hdrs = glob([
+        "imgwarp/**/*.h",
+        "imgwarp/**/*.hpp",
+    ]),
+    includes = ["imgwarp"],
+    copts = [
+        "-fPIC",
+        "-O2",
+        "-I/usr/include/opencv4",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Core library exposing headers to dependents
+cc_library(
+    name = "mozzamp_core",
+    srcs = [
+        "dfm.cpp",
+        "deform_utils.cpp",
+    ],
+    hdrs = [
+        "dfm.hpp",
+        "deform_utils.hpp",
+    ],
+    includes = ["."],  # allow #include "deform_utils.hpp"
+    copts = [
+        "-std=gnu++17",
+        "-fPIC",
+        "-O2",
+        "-I/usr/include/opencv4",
+    ],
+    deps = [
+        ":imgwarp",
+        "@com_google_absl//absl/status:statusor",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# The plugin shared object
 cc_binary(
-    name = "libgstfacelandmarks.so",
-    srcs = ["gstfacelandmarks.cpp"],
+    name = "libgstmozzamp.so",
+    srcs = [
+        "gstmozzamp.cpp",
+    ],
     linkshared = 1,
     copts = [
         "-std=gnu++17",
         "-fPIC",
         "-O2",
         "-Wno-deprecated-declarations",
+        "-I/usr/include/opencv4",
     ],
     deps = [
+        ":mozzamp_core",
         "//third_party/sysroot_gst:gstreamer",
         "//mediapipe/framework/formats:image",
         "//mediapipe/framework/formats:image_frame",
         "//mediapipe/tasks/cc/vision/face_landmarker:face_landmarker",
         "@com_google_absl//absl/status:statusor",
     ],
-    # Helpful RPATHs so the loader can find libs at runtime without extra env.
     linkopts = [
         "-Wl,-rpath,/opt/gstreamer/lib/x86_64-linux-gnu",
         "-Wl,-rpath,/usr/local/lib",
-        "-Wl,-rpath,/usr/lib/x86_64-linux-gnu"
+        "-Wl,-rpath,/usr/lib/x86_64-linux-gnu",
+        "-lopencv_core",
+        "-lopencv_imgproc",
     ],
     visibility = ["//visibility:public"],
 )
 EOF
-
-# Patch overlay loop for Tasks 0.10.x (NormalizedLandmarks has .landmarks)
-sed -i -E 's/for\s*\(\s*size_t\s+i\s*=\s*0;\s*i\s*<\s*face\.size\(\)\s*;\s*\+\+i\s*\)/for (const auto\& lm : face.landmarks)/' \
-  gstfacelandmarks/gstfacelandmarks.cpp
-sed -i -E '/^\s*const\s+auto&\s+lm\s*=\s*face\[i\];\s*$/d' \
-  gstfacelandmarks/gstfacelandmarks.cpp
 BASH
 
-WORKDIR /opt/gst-facelandmarks/mediapipe-src
+WORKDIR /opt/gst-mozzamp/mediapipe-src
 
-# Stable CPU-only build. Keep OpenCV enabled (needed by ImageToTensor CPU path).
+# Bazel config: CPU-only, C++17, OpenCV headers available
 RUN printf '%s\n' \
   'common --experimental_repo_remote_exec' \
   'common --repo_env=HERMETIC_PYTHON_VERSION=3.11' \
@@ -129,17 +190,23 @@ RUN printf '%s\n' \
 # Build and install the plugin into /app/plugins
 RUN set -eux; \
     bazel clean --expunge; \
-    bazel build //gstfacelandmarks:libgstfacelandmarks.so; \
+    bazel build //gstmozzamp:libgstmozzamp.so; \
     bbin="$(bazel info bazel-bin)"; \
-    real="${bbin}/gstfacelandmarks/libgstfacelandmarks.so"; \
-    install -D -m 0755 "$real" /app/plugins/libgstfacelandmarks.so; \
-    # quick self-check (scanner runs in a separate process)
+    real="${bbin}/gstmozzamp/libgstmozzamp.so"; \
+    install -D -m 0755 "$real" /app/plugins/libgstmozzamp.so; \
+    # quick self-check (non-fatal)
     GST_PLUGIN_PATH=/app/plugins \
     GST_DEBUG=GST_PLUGIN_LOADING:4 \
-    gst-inspect-1.0 facelandmarks || true
+    gst-inspect-1.0 mozza_mp || true
 
-# Optional: final stage identical to your base, just ships the .so
+# -----------------------------------------------------------------------------
+# Runtime stage: ship plugin + OpenCV runtime libs
+# -----------------------------------------------------------------------------
 FROM ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10 AS runtime
-COPY --from=builder /app/plugins/libgstfacelandmarks.so /app/plugins/libgstfacelandmarks.so
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libopencv-core4.6 libopencv-imgproc4.6 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/plugins/libgstmozzamp.so /app/plugins/libgstmozzamp.so
 ENV GST_PLUGIN_PATH=/app/plugins:$GST_PLUGIN_PATH
-# (No CMD here — you’ll run your Ducksoup binary as usual)

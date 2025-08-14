@@ -10,7 +10,7 @@ A lean GStreamer video filter (`facelandmarks`) that runs **MediaPipe Face Landm
 ## Build
 
 ```bash
-docker build -t gst-facelandmarks:latest .
+docker build -t mozzamp:latest .
 ```
 
 This will:
@@ -23,8 +23,8 @@ This will:
 
 # Verify plugin
 ```
-docker run --rm -it gst-facelandmarks:latest \
-  bash -lc 'gst-inspect-1.0 facelandmarks'
+docker run --rm -it mozzamp:latest \
+  bash -lc 'gst-inspect-1.0 mozzamp'
 ```
 You should see properties: model, max-faces, draw, radius, color.
 
@@ -36,50 +36,37 @@ chmod +x download_face_landmarker_model.sh
 
 ## Get the .so files
 ```
-./get_so_file.sh gst-facelandmarks:latest
+./get_so_file.sh mozzamp:latest
 chmod +x get_so_file.sh
 
 
-sudo cp dist/libgstfacelandmarks.so /home/deploy/deploy-ducksoup/app/plugins/libgstfacelandmarks.so
+sudo cp dist/libgstmozzamp.so /home/deploy/deploy-ducksoup/app/plugins/libgstmozzamp.so
 sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_landmarker.task
 ```
 ## Use it in DuckSoup mirror mode
-facelandmarks model=plugins/face_landmarker.task
+mozzamp model=plugins/face_landmarker.task
 
 # Quick runs
 ## 1) Synthetic input (videotestsrc → mp4 file on host)
 ```
 mkdir -p out
-docker run --rm -it -v "$PWD/out:/out" gst-facelandmarks:latest bash -lc '
+docker run --rm -it -v "$PWD/out:/out" mozzamp:latest bash -lc '
   gst-launch-1.0 -v \
     videotestsrc num-buffers=300 ! video/x-raw,width=640,height=480,framerate=30/1 ! \
     videoconvert ! video/x-raw,format=RGBA ! \
-    facelandmarks model=/opt/models/face_landmarker.task max-faces=1 draw=true radius=2 color=0x00FF00FF ! \
+    mozzamp model=/opt/models/face_landmarker.task max-faces=1 draw=true radius=2 color=0x00FF00FF ! \
     videoconvert ! x264enc tune=zerolatency ! mp4mux ! filesink location=/out/landmarked.mp4
 '
 ```
 
 ## 2) Process a host video file
-docker run --rm -it -v "$PWD:/work" gst-facelandmarks:latest bash -lc '
+docker run --rm -it -v "$PWD:/work" mozzamp:latest bash -lc '
   gst-launch-1.0 -v \
     filesrc location=/work/input.mp4 ! decodebin ! videoconvert ! video/x-raw,format=RGBA ! \
-    facelandmarks model=/opt/models/face_landmarker.task max-faces=1 ! \
+    mozzamp model=/opt/models/face_landmarker.task max-faces=1 ! \
     videoconvert ! x264enc ! mp4mux ! filesink location=/work/output_landmarked.mp4
 '
 
-## 3) Linux webcam (v4l2) with GUI sink
-xhost +local:docker
-docker run --rm -it \
-  --device /dev/video0:/dev/video0 \
-  -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
-  gst-facelandmarks:latest bash -lc '
-    gst-launch-1.0 -v \
-      v4l2src device=/dev/video0 ! videoconvert ! video/x-raw,format=RGBA ! \
-      facelandmarks model=/opt/models/face_landmarker.task ! \
-      videoconvert ! autovideosink
-  '
-  If X11 isn’t available, encode to a file instead of autovideosink.
 
 # Element usage
 The plugin expects RGBA input; negotiate with videoconvert if needed:
@@ -88,7 +75,7 @@ The plugin expects RGBA input; negotiate with videoconvert if needed:
 gst-launch-1.0 -v \
   videotestsrc ! video/x-raw,width=640,height=480 ! \
   videoconvert ! video/x-raw,format=RGBA ! \
-  facelandmarks model=/opt/models/face_landmarker.task max-faces=1 draw=true radius=2 color=0x00FF00FF ! \
+  mozzamp model=/opt/models/face_landmarker.task max-faces=1 draw=true radius=2 color=0x00FF00FF ! \
   fakesink
 ```
 
@@ -102,7 +89,7 @@ gst-launch-1.0 -v \
 
 # Update MediaPipe version
 ```
-docker build --build-arg MP_REF=v0.10.xx -t gst-facelandmarks:latest .
+docker build --build-arg MP_REF=v0.10.xx -t mozzamp:latest .
 ```
 
 # References
