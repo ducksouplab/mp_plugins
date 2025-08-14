@@ -1,0 +1,26 @@
+# mediapipe-src/gstfacelandmarks/BUILD
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "libgstfacelandmarks.so",
+    srcs = ["gstfacelandmarks.cpp"],
+    linkshared = 1,
+    copts = [
+        "-fPIC",
+        "-O2",
+        "-Wno-deprecated-declarations",
+    ],
+    linkopts = [
+        "-ldl",
+        "-lpthread",
+    ],
+    deps = [
+        "@linux_gstreamer//:gstreamer",
+        "@linux_opencv//:opencv",  # MediaPipe pulls some OpenCV calculators even if you don’t use cv:: in your code
+        "//mediapipe/framework/formats:image",
+        "//mediapipe/framework/formats:image_frame",
+        "//mediapipe/tasks/cc/vision/face_landmarker:face_landmarker",
+        "@com_google_absl//absl/status:statusor",
+    ],
+    visibility = ["//visibility:public"],
+)

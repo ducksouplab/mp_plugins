@@ -1,0 +1,9 @@
+build/
+mediapipe-src
+third_party/mediapipe-export
+.git
+.DS_Store
+# build artifacts
+dist/
+
+

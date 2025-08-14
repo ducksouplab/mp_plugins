@@ -1,0 +1,11 @@
+new_local_repository(
+    name = "linux_opencv",
+    path = "/usr",
+    build_file = "@//third_party:opencv_linux.BUILD",
+)
+
+new_local_repository(
+    name = "linux_gstreamer",
+    path = "/usr",
+    build_file = "@//third_party:gstreamer_linux.BUILD",
+)
