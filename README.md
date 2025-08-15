@@ -40,7 +40,7 @@ chmod +x download_face_landmarker_model.sh
 chmod +x get_so_file.sh
 
 
-sudo cp dist/libgstmozzamp.so /home/deploy/deploy-ducksoup/app/plugins/libgstmozzamp.so
+sudo cp -r out /home/deploy/deploy-ducksoup/app/plugins/mp_plugins
 sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_landmarker.task
 ```
 ## Use it in DuckSoup mirror mode
