@@ -12,8 +12,8 @@
 #include <vector>
 #include <cmath>        // std::lround
 
-#include "gstshared/mp_runtime.h"
-#include "gstshared/mp_runtime_loader.h"
+#include "mp_runtime.h"
+#include "mp_runtime_loader.h"
 
 #ifndef PACKAGE
 #define PACKAGE "facelandmarks"

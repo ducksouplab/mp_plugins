@@ -1,5 +1,6 @@
 // gstshared/mp_runtime.h
-#pragma once
+#ifndef MP_RUNTIME_H_
+#define MP_RUNTIME_H_
 
 #include <stdint.h>
 
@@ -7,122 +8,97 @@
 extern "C" {
 #endif
 
-// --------------------
-// Versioning / feature
-// --------------------
-#define MP_RUNTIME_API_VERSION       1
-#define MP_RUNTIME_API_MIN_VERSION   1
-#define MP_RUNTIME_API_MAX_VERSION   1
+// ---------- Version ----------
+#define MP_RUNTIME_API_VERSION     1
+#define MP_RUNTIME_API_MIN_VERSION 1
+#define MP_RUNTIME_API_MAX_VERSION 1
 
-// --------------------
-// Basic image wrapper
-// --------------------
+// ---------- Image ----------
 typedef enum MpImageFormat {
-  MP_IMAGE_UNKNOWN    = 0,
-  MP_IMAGE_RGBA8888   = 1,   // RGBA, 8-bit per channel
-  MP_IMAGE_RGB888     = 2,   // RGB,  8-bit per channel
-  MP_IMAGE_GRAY8      = 3,   // single channel
+  MP_IMAGE_UNKNOWN  = 0,
+  MP_IMAGE_RGBA8888 = 1,
+  MP_IMAGE_RGB888   = 2,
+  MP_IMAGE_GRAY8    = 3,
 } MpImageFormat;
 
 typedef struct MpImage {
-  const uint8_t* data;   // pointer to top-left pixel
-  int32_t        width;  // pixels
-  int32_t        height; // pixels
-  int32_t        stride; // bytes per row
-  MpImageFormat  format; // see enum
+  const uint8_t* data;
+  int32_t width;
+  int32_t height;
+  int32_t stride;
+  MpImageFormat format;
 } MpImage;
 
-// -------------
-// Face structs
-// -------------
+// ---------- Face outputs ----------
 typedef struct MpLandmark {
-  float x;  // normalized [0,1] or pixel — runtime will document what it returns
-  float y;  // normalized [0,1] or pixel
-  float z;  // model-dependent depth; may be 0 if not provided
+  float x, y, z;
 } MpLandmark;
 
 typedef struct MpBlendshape {
-  const char* category;  // e.g. "mouthSmileLeft"
-  float       score;     // 0..1
+  const char* category;
+  float score;
 } MpBlendshape;
 
 typedef struct MpFace {
-  // Required: landmarks (e.g. 468 for the canonical model)
-  const MpLandmark* landmarks;
-  int32_t           landmarks_count;
+  const MpLandmark*  landmarks;
+  int32_t            landmarks_count;
 
-  // Optional: blendshapes (0 if not requested)
   const MpBlendshape* blendshapes;
   int32_t             blendshapes_count;
 
-  // Optional: head pose / geometry (filled only if enabled)
-  float pose_quaternion_wxyz[4];  // {w,x,y,z}; undefined if not computed
-  int32_t pose_valid;             // 1 if pose fields are valid, else 0
+  float   pose_quaternion_wxyz[4];
+  int32_t pose_valid;
 } MpFace;
 
 typedef struct MpFaceResult {
-  const MpFace* faces;   // owned by runtime; freed via mp_face_landmarker_free_result()
+  const MpFace* faces;
   int32_t       faces_count;
-  int64_t       timestamp_us; // echo of inference timestamp
+  int64_t       timestamp_us;
 } MpFaceResult;
 
-// ---------------------
-// Creation / run options
-// ---------------------
-typedef struct MpFaceLandmarkerOptions {
-  const char* model_path;     // nullptr = use runtime default
-  int32_t     max_faces;      // e.g. 1..4
-  int32_t     with_blendshapes; // boolean 0/1
-  int32_t     with_geometry;    // boolean 0/1 (pose/mesh)
-  int32_t     num_threads;      // 0 = runtime default
-  const char* delegate;         // "xnnpack" (default), "gpu", etc., if supported
-} MpFaceLandmarkerOptions;
-
-// Opaque context owned by the runtime
+// ---------- Options / ctx ----------
 typedef struct MpFaceCtx MpFaceCtx;
 
-// -------------------------------------
-// Flat C symbols (fallback or direct use)
-// -------------------------------------
-int           mp_runtime_version(void);            // e.g. 10026 for v0.10.26
-const char*   mp_runtime_build(void);              // human string, never free()
+typedef struct MpFaceLandmarkerOptions {
+  const char* model_path;
+  int32_t     max_faces;
+  int32_t     with_blendshapes;
+  int32_t     with_geometry;
+  int32_t     num_threads;
+  const char* delegate;       // e.g. "xnnpack", "cpu"
+} MpFaceLandmarkerOptions;
 
-int           mp_face_landmarker_create(
-                const MpFaceLandmarkerOptions* opts,
-                MpFaceCtx** out_ctx);
+// ---------- Flat C API (optional exports) ----------
+int   mp_runtime_version(void);                       // e.g. 10026
+const char* mp_runtime_build(void);                   // string lifetime static
 
-int           mp_face_landmarker_detect(
-                MpFaceCtx* ctx,
-                const MpImage* frame,
-                int64_t timestamp_us,
-                MpFaceResult* out);
+int   mp_face_landmarker_create(const MpFaceLandmarkerOptions*, MpFaceCtx**);
+int   mp_face_landmarker_detect(MpFaceCtx*, const MpImage*, int64_t, MpFaceResult*);
+void  mp_face_landmarker_free_result(MpFaceResult*);
+void  mp_face_landmarker_close(MpFaceCtx**);
 
-void          mp_face_landmarker_free_result(
-                MpFaceResult* out); // frees any memory referenced by 'out'
+// Also export short names (some loaders expect these)
+int   face_create(const MpFaceLandmarkerOptions*, MpFaceCtx**);
+int   face_detect(MpFaceCtx*, const MpImage*, int64_t, MpFaceResult*);
+void  face_free_result(MpFaceResult*);
+void  face_close(MpFaceCtx**);
 
-void          mp_face_landmarker_close(
-                MpFaceCtx** ctx);   // sets *ctx = NULL
-
-// -------------------------------------
-// Preferred: single API table export
-// -------------------------------------
+// ---------- Preferred: API table ----------
 typedef struct MpRuntimeApi {
-  int api_version; // must be within [MP_RUNTIME_API_MIN_VERSION, MP_RUNTIME_API_MAX_VERSION]
+  int api_version;
+  int         (*runtime_version)(void);
+  const char* (*runtime_build)(void);
 
-  // General
-  int           (*runtime_version)(void);
-  const char*   (*runtime_build)(void);
-
-  // Face landmarker
-  int  (*face_create)(const MpFaceLandmarkerOptions*, MpFaceCtx**);
-  int  (*face_detect)(MpFaceCtx*, const MpImage*, int64_t, MpFaceResult*);
-  void (*face_free_result)(MpFaceResult*);
-  void (*face_close)(MpFaceCtx**);
+  int   (*face_create)(const MpFaceLandmarkerOptions*, MpFaceCtx**);
+  int   (*face_detect)(MpFaceCtx*, const MpImage*, int64_t, MpFaceResult*);
+  void  (*face_free_result)(MpFaceResult*);
+  void  (*face_close)(MpFaceCtx**);
 } MpRuntimeApi;
 
-// Implemented by the runtime shared library
+// The runtime shared object should export this symbol.
 const MpRuntimeApi* mp_runtime_get_api(void);
 
 #ifdef __cplusplus
-} // extern "C"
+}  // extern "C"
 #endif
+#endif  // MP_RUNTIME_H_

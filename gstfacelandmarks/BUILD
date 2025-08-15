@@ -7,7 +7,7 @@ cc_binary(
     srcs = ["gstfacelandmarks.cpp"],
     deps = [
         "//gstshared:mp_runtime_hdrs",
-        "//gstshared:mp_runtime_loader_hdrs",
+        "//gstshared:mp_runtime_loader",
         "//third_party/sysroot_gst:gstreamer",
     ],
     linkopts = ["-ldl", "-lm"],   # for dlopen + lround

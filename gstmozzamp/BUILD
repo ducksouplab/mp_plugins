@@ -47,7 +47,7 @@ cc_binary(
     deps = [
         ":mozzamp_core",
         "//gstshared:mp_runtime_hdrs",
-        "//gstshared:mp_runtime_loader_hdrs",
+        "//gstshared:mp_runtime_loader",
         "//third_party/sysroot_gst:gstreamer",
     ],
     copts = ["-I/usr/include/opencv4"],

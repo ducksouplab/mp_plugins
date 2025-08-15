@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # save as: copy_plugins_from_image.sh
 # usage: ./copy_plugins_from_image.sh [image[:tag]] [dest-dir]
+#example : ./get_so_file.sh mozzamp out
 set -euo pipefail
 
 IMG="${1:-mozza:latest}"      # whatever you tagged your build

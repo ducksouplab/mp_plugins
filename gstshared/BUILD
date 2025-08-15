@@ -1,25 +1,30 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary")
+# gstshared/BUILD
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
-
-# Header-only exports
 cc_library(
     name = "mp_runtime_hdrs",
     hdrs = ["mp_runtime.h"],
-    includes = ["."],  # allow #include "gstshared/mp_runtime.h" or "mp_runtime.h" from this pkg
+    includes = ["."],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
-    name = "mp_runtime_loader_hdrs",
+    name = "mp_runtime_loader",
+    srcs = ["mp_runtime_loader.cc"],
     hdrs = ["mp_runtime_loader.h"],
-    includes = ["."],
     deps = [":mp_runtime_hdrs"],
+    includes = ["."],
+    copts = ["-fPIC", "-std=c++14"],
+    linkopts = ["-Wl,--no-as-needed", "-ldl"],
+    visibility = ["//visibility:public"],
 )
 
-# Optional empty runtime .so (kept so Dockerfile can copy it)
 cc_binary(
     name = "libmp_runtime.so",
+    srcs = ["mp_runtime.cc"],
+    deps  = [":mp_runtime_hdrs"],
     linkshared = 1,
-    srcs = ["mp_runtime.cc"],   # your file can be empty
-    deps = [":mp_runtime_hdrs"],
+    copts = ["-O2", "-fPIC", "-std=c++14"],
+    linkopts = ["-Wl,-z,defs"],
+    visibility = ["//visibility:public"],
 )
