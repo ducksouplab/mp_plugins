@@ -17,9 +17,9 @@ cc_binary(
     deps = [
         "@linux_gstreamer//:gstreamer",
         "@linux_opencv//:opencv",  # MediaPipe pulls some OpenCV calculators even if you don’t use cv:: in your code
-        "//mediapipe/framework/formats:image",
-        "//mediapipe/framework/formats:image_frame",
-        "//mediapipe/tasks/cc/vision/face_landmarker:face_landmarker",
+        "@mediapipe//mediapipe/framework/formats:image",
+        "@mediapipe//mediapipe/framework/formats:image_frame",
+        "@mediapipe//mediapipe/tasks/cc/vision/face_landmarker:face_landmarker",
         "@com_google_absl//absl/status:statusor",
     ],
     visibility = ["//visibility:public"],
