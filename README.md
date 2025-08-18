@@ -36,8 +36,9 @@ chmod +x download_face_landmarker_model.sh
 
 ## Get the .so files
 ```
-./get_so_file.sh mozzamp:latest
 chmod +x get_so_file.sh
+./get_so_file.sh mozzamp:latest
+
 
 !!!! -- Carefull, at the moment Ducksoup won't load any of the plugins if both of them are passed in the folder, because some weird dependency issue, in which both of them load the library and it crashes. I haven't corrected this yet... Maybe will have to do it in the future...
 
@@ -48,6 +49,13 @@ sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_
 mozzamp model=plugins/face_landmarker.task
 
 # Quick runs
+
+## Check gst-inspect-1.0
+gst-inspect-1.0 mozzamp
+
+Or with the .so directly:
+gst-inspect-1.0 libgstmozzamp.so
+
 ## 1) Synthetic input (videotestsrc → mp4 file on host)
 ```
 mkdir -p out

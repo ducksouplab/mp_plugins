@@ -85,6 +85,8 @@ RUN printf '%s\n' \
   'build --define xnn_enable_avxvnni=false' \
   'build --define xnn_enable_avxvnniint8=false' \
   'build --cxxopt=-std=gnu++17 --host_cxxopt=-std=gnu++17' \
+  'build --cxxopt=-I/usr/include/opencv4' \
+
   > .bazelrc
 
 # 5) Build both plugins inside the Mediapipe workspace
