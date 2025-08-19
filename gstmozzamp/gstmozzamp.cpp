@@ -526,7 +526,9 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
     }
 
     std::vector<std::vector<cv::Point2f>> srcGroups, dstGroups;
-    build_groups_from_dfm(*self->dfm, L, self->alpha, srcGroups, dstGroups);
+    std::vector<cv::Rect> groupBounds;
+    build_groups_from_dfm(*self->dfm, L, self->alpha,
+                          srcGroups, dstGroups, groupBounds, W, H);
 
     if (srcGroups.empty()) {
       GST_WARNING_OBJECT(self, "DFM produced 0 groups — topology mismatch? (detector count=%zu)", L.size());
@@ -556,76 +558,85 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
       const bool DBG_INVERT_IF_ZERO = env_flag("MOZZA_DEBUG_INVERT_IF_ZERO");
       const bool DBG_AFFINE         = env_flag("MOZZA_DEBUG_AFFINE");
+      const bool use_full_frame     = env_flag("MOZZA_MLS_FULL_FRAME");
 
       const auto t0w = std::chrono::steady_clock::now();
 
-      // ImgWarp_MLS_Rigid only handles 3-channel images; cache a reusable
-      // BGR buffer to avoid reallocating every frame.
-      cv::Mat& img_bgr = self->bgr_tmp;
-      img_bgr.create(H, W, CV_8UC3);
-      cv::cvtColor(img_rgba, img_bgr, cv::COLOR_RGBA2BGR);
+      if (use_full_frame) {
+        // Full-frame path: combine all groups and warp once.
+        cv::Mat& img_bgr = self->bgr_tmp;
+        img_bgr.create(H, W, CV_8UC3);
+        cv::cvtColor(img_rgba, img_bgr, cv::COLOR_RGBA2BGR);
 
-      // Combine all control points into a single warp to avoid repeatedly
-      // warping the entire image for each group.
-      std::vector<cv::Point2f> src;
-      std::vector<cv::Point2f> dst;
-      src.reserve(ctrl_pts + 4);
-      dst.reserve(ctrl_pts + 4);
-      for (size_t g = 0; g < srcGroups.size(); ++g) {
-        src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
-        dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
-      }
-      add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
+        std::vector<cv::Point2f> src;
+        std::vector<cv::Point2f> dst;
+        src.reserve(ctrl_pts + 4);
+        dst.reserve(ctrl_pts + 4);
+        for (size_t g = 0; g < srcGroups.size(); ++g) {
+          src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
+          dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
+        }
+        add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
 
-      uint64_t hash_before = 0;
-      if (log_now) {
-        hash_before = fnv1a64(img_bgr.data,
-                              (size_t)img_bgr.step[0] * img_bgr.rows);
-      }
+        uint64_t hash_before = 0;
+        if (log_now) {
+          hash_before = fnv1a64(img_bgr.data,
+                                (size_t)img_bgr.step[0] * img_bgr.rows);
+        }
 
-      cv::Mat warped;
-      if (DBG_AFFINE) {
-        cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
-        cv::warpAffine(img_bgr, warped, M, img_bgr.size(),
-                       cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+        cv::Mat warped;
+        if (DBG_AFFINE) {
+          cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
+          cv::warpAffine(img_bgr, warped, M, img_bgr.size(),
+                         cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+        } else {
+          warped = self->mls->setAllAndGenerate(
+              img_bgr, src, dst, img_bgr.cols, img_bgr.rows);
+        }
+
+        double mean_delta = 0.0;
+        const bool need_mean_delta = DBG_INVERT_IF_ZERO || log_now;
+        if (need_mean_delta && !warped.empty()) {
+          mean_delta = mean_abs_rgb_diff(img_bgr, warped);
+        }
+        if (!warped.empty()) {
+          warped.copyTo(img_bgr);
+        }
+
+        uint64_t hash_after = 0;
+        if (log_now) {
+          hash_after = fnv1a64(img_bgr.data,
+                               (size_t)img_bgr.step[0] * img_bgr.rows);
+        }
+
+        if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
+          cv::bitwise_not(img_bgr, img_bgr);
+        }
+
+        if (log_now) {
+          GST_INFO_OBJECT(self,
+            "MLS combined: groups=%zu ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
+            srcGroups.size(), (size_t)src.size(),
+            (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
+            (hash_before == hash_after ? "  (no byte change!)" : ""));
+        }
+
+        cv::cvtColor(img_bgr, img_rgba, cv::COLOR_BGR2RGBA);
       } else {
-        warped = self->mls->setAllAndGenerate(
-            img_bgr, src, dst, img_bgr.cols, img_bgr.rows);
+        // ROI path: warp each group independently on its tight bounds.
+        for (size_t g = 0; g < srcGroups.size(); ++g) {
+          std::vector<cv::Point2f> src = srcGroups[g];
+          std::vector<cv::Point2f> dst = dstGroups[g];
+          add_identity_anchors(groupBounds[g], src, dst, /*inset=*/2);
+          compute_MLS_on_ROI(img_rgba, *self->mls, src, dst, groupBounds[g]);
+        }
       }
-
-      double mean_delta = 0.0;
-      const bool need_mean_delta = DBG_INVERT_IF_ZERO || log_now;
-      if (need_mean_delta && !warped.empty()) {
-        mean_delta = mean_abs_rgb_diff(img_bgr, warped);
-      }
-      if (!warped.empty()) {
-        warped.copyTo(img_bgr);
-      }
-
-      uint64_t hash_after = 0;
-      if (log_now) {
-        hash_after = fnv1a64(img_bgr.data,
-                             (size_t)img_bgr.step[0] * img_bgr.rows);
-      }
-
-      if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
-        cv::bitwise_not(img_bgr, img_bgr);
-      }
-
-      if (log_now) {
-        GST_INFO_OBJECT(self,
-          "MLS combined: groups=%zu ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
-          srcGroups.size(), (size_t)src.size(),
-          (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
-          (hash_before == hash_after ? "  (no byte change!)" : ""));
-      }
-
-      cv::cvtColor(img_bgr, img_rgba, cv::COLOR_BGR2RGBA);
 
       const auto t1w = std::chrono::steady_clock::now();
       if (log_now) {
         const auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
-        GST_INFO_OBJECT(self, "MLS warp %lld ms", (long long)msw);
+        GST_INFO_OBJECT(self, "MLS warp %lld ms (%s)", (long long)msw,
+                        use_full_frame ? "full" : "roi");
       }
 
       // Draw displacement vectors (top)
