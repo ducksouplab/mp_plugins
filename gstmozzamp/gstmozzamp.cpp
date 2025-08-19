@@ -647,7 +647,9 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
                          cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
         } else {
           // Run MLS in-place on 3-channel ROI
-          compute_MLS_on_ROI(roi_bgr, *self->mls, src_rel, dst_rel);
+          cv::Mat warped = self->mls->setAllAndGenerate(
+              roi_bgr, src_rel, dst_rel, roi_bgr.cols, roi_bgr.rows);
+          if (!warped.empty()) warped.copyTo(roi_bgr);
         }
 
         // Delta measurement
