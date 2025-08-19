@@ -615,8 +615,7 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
         // Rebase control points to ROI
         std::vector<cv::Point2f> src_rel; src_rel.reserve(srcGroups[g].size() + 4);
-        std::vector<cv::Point2f> dst_rel; src_rel.reserve(dstGroups[g].size() + 4);
-        dst_rel.reserve(dstGroups[g].size() + 4);
+        std::vector<cv::Point2f> dst_rel; dst_rel.reserve(dstGroups[g].size() + 4);
         for (size_t i = 0; i < srcGroups[g].size(); ++i) {
           src_rel.emplace_back(srcGroups[g][i].x - roi.x, srcGroups[g][i].y - roi.y);
           dst_rel.emplace_back(dstGroups[g][i].x - roi.x, dstGroups[g][i].y - roi.y);
