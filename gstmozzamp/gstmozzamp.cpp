@@ -435,14 +435,30 @@ static inline void add_identity_anchors(
 
 
 // ── Per-frame work ───────────────────────────────────────────────────────────
-static inline uint64_t fnv1a64(const uint8_t* p, size_t n) {
-  uint64_t h = 1469598103934665603ull; // FNV offset
+
+// Streamed/seeded FNV-1a (64-bit) — lets us continue hashing across rows.
+// FNV-1a 64-bit, supports both 2-arg and 3-arg use (seed is optional)
+static inline uint64_t fnv1a64(const uint8_t* p, size_t n, uint64_t seed = 14695981039346656037ULL) {
+  uint64_t h = seed;                       // FNV offset basis by default
+  const uint64_t prime = 1099511628211ULL; // FNV prime
   for (size_t i = 0; i < n; ++i) {
-    h ^= (uint64_t)p[i];
-    h *= 1099511628211ull;             // FNV prime
+    h ^= static_cast<uint64_t>(p[i]);
+    h *= prime;
   }
   return h;
 }
+
+
+static inline uint64_t hash_frame_rgba(const uint8_t* base, int W, int H, int stride) {
+  // Hash the visible RGBA bytes row-by-row with FNV-1a64 (streamed).
+  uint64_t h = 0ULL;  // 0 → function will initialize to FNV basis
+  for (int y = 0; y < H; ++y) {
+    const uint8_t* row = base + static_cast<size_t>(y) * static_cast<size_t>(stride);
+    h = fnv1a64(row, static_cast<size_t>(W) * 4u, h);
+  }
+  return h;
+}
+
 
 static double mean_abs_rgb_diff(const cv::Mat& a, const cv::Mat& b) {
   cv::Mat diff; cv::absdiff(a, b, diff);
@@ -458,6 +474,14 @@ static bool env_flag(const char* name) {
   return s && *s && s[0] != '0';
 }
 
+
+
+static inline uint32_t read_rgba_px(const uint8_t* data, int stride, int x, int y) {
+  const uint8_t* p = data + (size_t)y * stride + (size_t)x * 4;
+  // Pack as 0xAABBGGRR to make channel order obvious in logs.
+  return (uint32_t)p[3] << 24 | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | (uint32_t)p[0];
+}
+
 static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
                                                      GstVideoFrame* f) {
   auto* self = GST_MOZZA_MP(vf);
@@ -471,10 +495,12 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
   auto* data       = static_cast<uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(f, 0));
 
   if (self->frame_count == 1) {
-    GST_INFO_OBJECT(self, "first frame: %dx%d stride=%d overlay=%d show-landmarks=%d drop=%d dfm=%s (mls grid=%d alpha=%.2f)",
-                    W, H, stride, (int)self->overlay, (int)self->show_landmarks, (int)self->drop,
-                    self->dfm ? "yes" : "no", self->mls ? self->mls->gridSize : -1,
-                    self->mls ? self->mls->alpha : -1.0);
+    GST_INFO_OBJECT(self,
+      "first frame: %dx%d stride=%d overlay=%d show-landmarks=%d drop=%d dfm=%s (mls grid=%d alpha=%.2f)",
+      W, H, stride, (int)self->overlay, (int)self->show_landmarks, (int)self->drop,
+      self->dfm ? "yes" : "no",
+      self->mls ? self->mls->gridSize : -1,
+      self->mls ? self->mls->alpha    : -1.0);
   }
 
   // Wrap original RGBA buffer
@@ -546,26 +572,34 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
   // Apply deformation via DFM + MLS
   if (self->dfm) {
+    if (!self->mls) {
+      GST_WARNING_OBJECT(self, "DFM provided but MLS object is null — skipping warp");
+      MpApi().face_free_result(&out);
+      return GST_FLOW_OK;
+    }
+
     std::vector<std::vector<cv::Point2f>> srcGroups, dstGroups;
     build_groups_from_dfm(*self->dfm, L, self->alpha, srcGroups, dstGroups);
 
     if (srcGroups.empty()) {
       GST_WARNING_OBJECT(self, "DFM produced 0 groups — topology mismatch? (detector count=%zu)", L.size());
     } else {
-      // Log displacement stats
-      float max_disp = 0.0f;
-      size_t ctrl_pts = 0;
+      // Displacement stats (from DFM)
+      float max_disp = 0.0f, mean_disp = 0.0f;
+      size_t ctrl_pts = 0, samples = 0;
       for (size_t g = 0; g < srcGroups.size(); ++g) {
         ctrl_pts += srcGroups[g].size();
         for (size_t i = 0; i < srcGroups[g].size(); ++i) {
           cv::Point2f d = dstGroups[g][i] - srcGroups[g][i];
           float v = std::hypot(d.x, d.y);
-          if (v > max_disp) max_disp = v;
+          max_disp = std::max(max_disp, v);
+          mean_disp += v; ++samples;
         }
       }
+      if (samples) mean_disp /= samples;
       if (should_log(self->frame_count)) {
-        GST_INFO_OBJECT(self, "DFM groups: %zu groups, total control pts=%zu (alpha=%.3f, max-disp=%.2f px)",
-                        srcGroups.size(), ctrl_pts, self->alpha, max_disp);
+        GST_INFO_OBJECT(self, "DFM groups=%zu ctrl=%zu alpha=%.3f mean|Δ|=%.2f max|Δ|=%.2f",
+                        srcGroups.size(), ctrl_pts, self->alpha, mean_disp, max_disp);
       }
 
       const bool DBG_INVERT_IF_ZERO = env_flag("MOZZA_DEBUG_INVERT_IF_ZERO");
@@ -581,7 +615,8 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
         // Rebase control points to ROI
         std::vector<cv::Point2f> src_rel; src_rel.reserve(srcGroups[g].size() + 4);
-        std::vector<cv::Point2f> dst_rel; dst_rel.reserve(dstGroups[g].size() + 4);
+        std::vector<cv::Point2f> dst_rel; src_rel.reserve(dstGroups[g].size() + 4);
+        dst_rel.reserve(dstGroups[g].size() + 4);
         for (size_t i = 0; i < srcGroups[g].size(); ++i) {
           src_rel.emplace_back(srcGroups[g][i].x - roi.x, srcGroups[g][i].y - roi.y);
           dst_rel.emplace_back(dstGroups[g][i].x - roi.x, dstGroups[g][i].y - roi.y);
@@ -593,31 +628,34 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
         cv::Mat roi_bgr;
         cv::cvtColor(roi_rgba, roi_bgr, cv::COLOR_RGBA2BGR); // CV_8UC3 copy
 
-        // Debug: types/continuity
+        // Pre-warp debug info
         if (should_log(self->frame_count)) {
-          GST_INFO_OBJECT(self, "ROI[%zu] info: RGBA type=%d cont=%d size=%dx%d step=%zu | BGR type=%d cont=%d size=%dx%d",
-                          g, roi_rgba.type(), roi_rgba.isContinuous(), roi_rgba.cols, roi_rgba.rows, roi_rgba.step,
-                          roi_bgr.type(),  roi_bgr.isContinuous(),  roi_bgr.cols,  roi_bgr.rows);
+          GST_INFO_OBJECT(self,
+            "ROI[%zu] info: RGBA type=%d cont=%d size=%dx%d step=%zu | BGR type=%d cont=%d size=%dx%d step=%zu",
+            g,
+            roi_rgba.type(), roi_rgba.isContinuous(), roi_rgba.cols, roi_rgba.rows, (size_t)roi_rgba.step[0],
+            roi_bgr.type(),  roi_bgr.isContinuous(),  roi_bgr.cols,  roi_bgr.rows,  (size_t)roi_bgr.step[0]);
         }
 
         // Hash & snapshot before
-        const uint64_t hash_before = fnv1a64(roi_bgr.data, (size_t)roi_bgr.step * roi_bgr.rows);
+        const uint64_t hash_before = fnv1a64(roi_bgr.data, (size_t)roi_bgr.step[0] * roi_bgr.rows);
         cv::Mat before_bgr = roi_bgr.clone();
 
         if (DBG_AFFINE) {
-          // Visible affine translation as a hard sanity check
+          // Visible affine translation as a sanity check
           cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
-          cv::warpAffine(roi_bgr, roi_bgr, M, roi_bgr.size(), cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+          cv::warpAffine(roi_bgr, roi_bgr, M, roi_bgr.size(),
+                         cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
         } else {
           // Run MLS in-place on 3-channel ROI
           compute_MLS_on_ROI(roi_bgr, *self->mls, src_rel, dst_rel);
         }
 
         // Delta measurement
-        const uint64_t hash_after = fnv1a64(roi_bgr.data, (size_t)roi_bgr.step * roi_bgr.rows);
-        const double mean_delta   = mean_abs_rgb_diff(before_bgr, roi_bgr);
+        const uint64_t hash_after = fnv1a64(roi_bgr.data, (size_t)roi_bgr.step[0] * roi_bgr.rows);
+        const double   mean_delta = mean_abs_rgb_diff(before_bgr, roi_bgr);
 
-        // Copy back to RGBA
+        // Copy back to RGBA (BGR→RGBA)
         cv::Mat roi_back_rgba;
         cv::cvtColor(roi_bgr, roi_back_rgba, cv::COLOR_BGR2RGBA);
         roi_back_rgba.copyTo(roi_rgba);
@@ -627,22 +665,26 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
           cv::bitwise_not(roi_rgba, roi_rgba);
         }
 
+        // Optional ROI rectangle overlay
         if (self->overlay) {
-          // Draw ROI rectangle
           const uint32_t green = 0x00FF00FFu;
-          draw_line(data, W, H, stride, roi.x, roi.y, roi.x + roi.width - 1, roi.y,                green);
-          draw_line(data, W, H, stride, roi.x, roi.y, roi.x,                roi.y + roi.height - 1, green);
+          draw_line(data, W, H, stride, roi.x, roi.y,
+                    roi.x + roi.width - 1, roi.y, green);                          // top
+          draw_line(data, W, H, stride, roi.x, roi.y,
+                    roi.x, roi.y + roi.height - 1, green);                         // left
           draw_line(data, W, H, stride, roi.x + roi.width - 1, roi.y,
-                                   roi.x + roi.width - 1, roi.y + roi.height - 1, green);
+                    roi.x + roi.width - 1, roi.y + roi.height - 1, green);         // right
           draw_line(data, W, H, stride, roi.x, roi.y + roi.height - 1,
-                                   roi.x + roi.width - 1, roi.y + roi.height - 1, green);
+                    roi.x + roi.width - 1, roi.y + roi.height - 1, green);         // bottom
         }
 
         // Per-ROI debug stats
         if (should_log(self->frame_count)) {
-          GST_INFO_OBJECT(self, "MLS ROI[%zu]: x=%d y=%d w=%d h=%d, ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f",
-                          g, roi.x, roi.y, roi.width, roi.height, src_rel.size() - 4,
-                          (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta);
+          GST_INFO_OBJECT(self,
+            "MLS ROI[%zu]: x=%d y=%d w=%d h=%d, ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
+            g, roi.x, roi.y, roi.width, roi.height, (size_t)src_rel.size(),
+            (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
+            (hash_before == hash_after ? "  (no byte change!)" : ""));
         }
       }
 
@@ -675,6 +717,7 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
   MpApi().face_free_result(&out);
   return GST_FLOW_OK;
 }
+
 
 
 // ── Class / init / plugin boilerplate ────────────────────────────────────────

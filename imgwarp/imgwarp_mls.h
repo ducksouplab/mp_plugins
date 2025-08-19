@@ -3,8 +3,8 @@
 
 #include "opencv2/opencv.hpp"
 #include <vector>
-using std::vector;
 
+using std::vector;
 using cv::Mat;
 using cv::Mat_;
 using cv::Point_;
@@ -16,74 +16,80 @@ using cv::Point;
  * an output is to use setAllAndGenerate function.
  */
 class ImgWarp_MLS {
-   public:
+public:
     ImgWarp_MLS();
     virtual ~ImgWarp_MLS() {}
-    
 
     //! Set all and generate an output.
-    /*!
-      \param oriImg the image to be warped.
-      \param qsrc A list of "from" points.
-      \param qdst A list of "target" points.
-      \param outW The width of the output image.
-      \param outH The height of the output image.
-      \param transRatio 1 means warp to target points, 0 means no warping
+    Mat setAllAndGenerate(const Mat &oriImg,
+                          const vector<Point_<int> >   &qsrc,
+                          const vector<Point_<int> >   &qdst,
+                          const int outW, const int outH,
+                          const double transRatio = 1);
+    Mat setAllAndGenerate(const Mat &oriImg,
+                          const vector<Point_<float> > &qsrc,
+                          const vector<Point_<float> > &qdst,
+                          const int outW, const int outH,
+                          const double transRatio = 1);
 
-      This will do all the initialization and generate a warped image.
-      After calling this, one can later call genNewImg with different
-      transRatios to generate a warping animation.
-    */
-    Mat setAllAndGenerate(const Mat &oriImg, const vector<Point_<int> > &qsrc,
-                          const vector<Point_<int> > &qdst, const int outW,
-                          const int outH, const double transRatio = 1);
-    Mat setAllAndGenerate(const Mat &oriImg, const vector<Point_<float> > &qsrc,
-                          const vector<Point_<float> > &qdst, const int outW,
-                          const int outH, const double transRatio = 1);
-
-    //! Generate the warped image.
-    /*! This function generate a warped image using PRE-CALCULATED data.
-     *  DO NOT CALL THIS AT FIRST! Call this after at least one call of
-     *  setAllAndGenerate.
-     */
+    //! Generate the warped image (requires prior setAllAndGenerate()).
     Mat genNewImg(const Mat &oriImg, double transRatio);
 
-    //! Calculate delta value which will be used for generating the warped
-    //image.
+    //! Calculate delta fields (implemented by subclasses).
     virtual void calcDelta() = 0;
 
-    //! Parameter for MLS.
+    //! MLS parameters.
     double alpha;
+    int    gridSize;
 
-    //! Parameter for MLS.
-    int gridSize;
+    //! Set source/target points
+    inline void setDstPoints(const vector<Point_<int> >   &qdst);
+    inline void setDstPoints(const vector<Point_<float> > &qdst);
+    inline void setSrcPoints(const vector<Point_<int> >   &qsrc);
+    inline void setSrcPoints(const vector<Point_<float> > &qsrc);
 
-    //! Set the list of target points
-    void setDstPoints(const vector<Point_<int> > &qdst);
-    void setDstPoints(const vector<Point_<float> > &qdst);
+    //! Original and target sizes
+    inline void setSize(int w, int h)            { srcW = w; srcH = h; }
+    inline void setTargetSize(int outW, int outH){ tarW = outW; tarH = outH; }
 
-    //! Set the list of source points
-    void setSrcPoints(const vector<Point_<int> > &qsrc);
-    void setSrcPoints(const vector<Point_<float> > &qsrc);
+    //! Read-only access to displacement fields after calcDelta()
+    inline const Mat_<double>& deltaX() const { return rDx; }
+    inline const Mat_<double>& deltaY() const { return rDy; }
 
-    //! The size of the original image. For precalculation.
-    void setSize(int w, int h) { srcW = w, srcH = h; }
+protected:
+    vector<Point_<double> > oldDotL, newDotL; // old = dst, new = src (library naming)
+    int nPoint = 0;
 
-    //! The size of output image
-    void setTargetSize(const int outW, const int outH) {
-        tarW = outW;
-        tarH = outH;
-    }
+    Mat_<double> rDx, rDy;  // displacement fields
 
-   protected:
-    vector<Point_<double> > oldDotL, newDotL;
-
-    int nPoint;
-
-    Mat_<double> /*! \brief delta_x */ rDx, /*! \brief delta_y */ rDy;
-
-    int srcW, srcH;
-    int tarW, tarH;
+    int srcW = 0, srcH = 0;
+    int tarW = 0, tarH = 0;
 };
 
-#endif  // IMGTRANS_MLS_H
+// ---- inline definitions ----------------------------------------------------
+
+inline void ImgWarp_MLS::setDstPoints(const vector<Point_<int> > &qdst) {
+    nPoint = static_cast<int>(qdst.size());
+    oldDotL.clear(); oldDotL.reserve(nPoint);
+    for (size_t i = 0; i < qdst.size(); ++i) oldDotL.push_back(qdst[i]);
+}
+
+inline void ImgWarp_MLS::setDstPoints(const vector<Point_<float> > &qdst) {
+    nPoint = static_cast<int>(qdst.size());
+    oldDotL.clear(); oldDotL.reserve(nPoint);
+    for (size_t i = 0; i < qdst.size(); ++i) oldDotL.push_back(qdst[i]);
+}
+
+inline void ImgWarp_MLS::setSrcPoints(const vector<Point_<int> > &qsrc) {
+    nPoint = static_cast<int>(qsrc.size());
+    newDotL.clear(); newDotL.reserve(nPoint);
+    for (size_t i = 0; i < qsrc.size(); ++i) newDotL.push_back(qsrc[i]);
+}
+
+inline void ImgWarp_MLS::setSrcPoints(const vector<Point_<float> > &qsrc) {
+    nPoint = static_cast<int>(qsrc.size());
+    newDotL.clear(); newDotL.reserve(nPoint);
+    for (size_t i = 0; i < qsrc.size(); ++i) newDotL.push_back(qsrc[i]);
+}
+
+#endif // IMGTRANS_MLS_H

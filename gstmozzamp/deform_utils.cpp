@@ -2,7 +2,6 @@
 #include "deform_utils.hpp"
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 
 // --- helpers ---------------------------------------------------------------
 
@@ -67,6 +66,7 @@ void build_groups_from_dfm(const Deformations& dfm,
   srcGroups.swap(s2); dstGroups.swap(d2);
 }
 
+// --- MLS apply on ROI (public API only) ------------------------------------
 // --- MLS apply on ROI ------------------------------------------------------
 
 void compute_MLS_on_ROI(cv::Mat& frameRGBA, ImgWarp_MLS_Rigid& mls,
@@ -79,43 +79,21 @@ void compute_MLS_on_ROI(cv::Mat& frameRGBA, ImgWarp_MLS_Rigid& mls,
   const cv::Rect roi = tight_bounds_union(src, dst, frameRGBA.cols, frameRGBA.rows, /*pad*/18);
   if (roi.width <= 1 || roi.height <= 1) return;
 
-  // Extract ROI, convert RGBA→BGR (MLS expects 3 channels)
-  cv::Mat roi_rgba = frameRGBA(roi);   // view into frame
+  // Views / conversions (MLS expects 3-channel)
+  cv::Mat roi_rgba = frameRGBA(roi);   // CV_8UC4 view into the frame
   cv::Mat roi_bgr;
-  cv::cvtColor(roi_rgba, roi_bgr, cv::COLOR_RGBA2BGR);
+  cv::cvtColor(roi_rgba, roi_bgr, cv::COLOR_RGBA2BGR); // copy to CV_8UC3
 
   // Control points in ROI-local coordinates
   const std::vector<cv::Point2f> sL = to_local(src, roi);
   const std::vector<cv::Point2f> dL = to_local(dst, roi);
 
-  // Compute displacement fields (does not mutate roi_bgr)
-  mls.setAllAndGenerate(roi_bgr, sL, dL, roi_bgr.cols, roi_bgr.rows);
+  // Let the library do its usual thing: calc grid deltas + bilinear densify
+  cv::Mat warped_bgr = mls.setAllAndGenerate(roi_bgr, sL, dL,
+                                             roi_bgr.cols, roi_bgr.rows,
+                                             /*transRatio=*/1.0);
+  if (warped_bgr.empty()) return;
 
-  // Fetch the displacement maps through public accessors (see header tweak).
-  const cv::Mat_<double>& rDx = mls.deltaX();
-  const cv::Mat_<double>& rDy = mls.deltaY();
-  if (rDx.empty() || rDy.empty() ||
-      rDx.rows != roi_bgr.rows || rDx.cols != roi_bgr.cols) {
-    return; // safe no-op
-  }
-
-  // Build remap grids (OpenCV needs absolute source coords).
-  cv::Mat mapx(roi_bgr.size(), CV_32FC1);
-  cv::Mat mapy(roi_bgr.size(), CV_32FC1);
-  for (int y = 0; y < roi_bgr.rows; ++y) {
-    const double* dx = rDx.ptr<double>(y);
-    const double* dy = rDy.ptr<double>(y);
-    float* mx = mapx.ptr<float>(y);
-    float* my = mapy.ptr<float>(y);
-    for (int x = 0; x < roi_bgr.cols; ++x) {
-      mx[x] = static_cast<float>(x + dx[x]);
-      my[x] = static_cast<float>(y + dy[x]);
-    }
-  }
-
-  // Apply warp and write back (BGR→RGBA)
-  cv::Mat warped_bgr;
-  cv::remap(roi_bgr, warped_bgr, mapx, mapy,
-            cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+  // Copy back into the frame (BGR→RGBA)
   cv::cvtColor(warped_bgr, roi_rgba, cv::COLOR_BGR2RGBA);
 }

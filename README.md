@@ -39,10 +39,12 @@ chmod +x download_face_landmarker_model.sh
 chmod +x get_so_file.sh
 ./get_so_file.sh mozzamp:latest
 
+## Careful with this line : remove old plugins from destination
+##sudo rm -r /home/deploy/deploy-ducksoup/app/plugins/mp_plugins/
 
 !!!! -- Carefull, at the moment Ducksoup won't load any of the plugins if both of them are passed in the folder, because some weird dependency issue, in which both of them load the library and it crashes. I haven't corrected this yet... Maybe will have to do it in the future...
 
-sudo cp -r out /home/deploy/deploy-ducksoup/app/plugins/mp_plugins
+sudo cp -r mp-out /home/deploy/deploy-ducksoup/app/plugins/mp_plugins
 sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_landmarker.task
 ```
 ## Use it in DuckSoup mirror mode
