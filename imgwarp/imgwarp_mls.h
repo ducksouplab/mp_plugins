@@ -19,6 +19,7 @@ class ImgWarp_MLS {
    public:
     ImgWarp_MLS();
     virtual ~ImgWarp_MLS() {}
+    
 
     //! Set all and generate an output.
     /*!

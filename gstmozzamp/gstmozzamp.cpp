@@ -41,6 +41,7 @@
 #include "dfm.hpp"
 #include "deform_utils.hpp"
 #include "imgwarp/imgwarp_mls_rigid.h"
+#include <limits>   // for std::numeric_limits
 
 #ifndef PACKAGE
 #define PACKAGE "mozza_mp"
@@ -350,7 +351,113 @@ static void gst_mozza_mp_finalize(GObject* object) {
 static gboolean gst_mozza_mp_set_info(GstVideoFilter*, GstCaps*, GstVideoInfo*,
                                       GstCaps*, GstVideoInfo*) { return TRUE; }
 
+
+// Compute a tight ROI that covers BOTH src and dst points, expand by `margin`,
+// clamp to image bounds [0..W/H), and make sure it’s at least 2×2 pixels.
+static inline cv::Rect bounding_rect_from_points(
+    const std::vector<cv::Point2f>& src,
+    const std::vector<cv::Point2f>& dst,
+    int W, int H,
+    int margin = 16,
+    int min_size = 2) {
+
+  if ((src.empty() && dst.empty()) || W <= 0 || H <= 0) {
+    return cv::Rect(0, 0, 0, 0);
+  }
+
+  float minx =  std::numeric_limits<float>::infinity();
+  float miny =  std::numeric_limits<float>::infinity();
+  float maxx = -std::numeric_limits<float>::infinity();
+  float maxy = -std::numeric_limits<float>::infinity();
+
+  auto grow = [&](const std::vector<cv::Point2f>& v){
+    for (const auto& p : v) {
+      if (p.x < minx) minx = p.x;
+      if (p.y < miny) miny = p.y;
+      if (p.x > maxx) maxx = p.x;
+      if (p.y > maxy) maxy = p.y;
+    }
+  };
+  grow(src);
+  grow(dst);
+
+  // Expand by margin
+  minx = std::floor(minx) - margin;
+  miny = std::floor(miny) - margin;
+  maxx = std::ceil (maxx) + margin;
+  maxy = std::ceil (maxy) + margin;
+
+  // Clamp to image bounds
+  int x0 = std::max(0,              (int)minx);
+  int y0 = std::max(0,              (int)miny);
+  int x1 = std::min(W - 1,          (int)maxx);
+  int y1 = std::min(H - 1,          (int)maxy);
+
+  // Ensure non-empty
+  if (x1 <= x0) x1 = std::min(W - 1, x0 + (min_size - 1));
+  if (y1 <= y0) y1 = std::min(H - 1, y0 + (min_size - 1));
+
+  // width/height are inclusive -> +1
+  int rw = std::max(min_size, (x1 - x0 + 1));
+  int rh = std::max(min_size, (y1 - y0 + 1));
+
+  // Final clamp (in case min_size pushed us out)
+  if (x0 + rw > W) x0 = std::max(0, W - rw);
+  if (y0 + rh > H) y0 = std::max(0, H - rh);
+
+  return cv::Rect(x0, y0, rw, rh);
+}
+
+// Add 4 identity “pin” anchors (same src==dst) near ROI corners, slightly inset
+// so they are strictly inside the ROI. This helps keep the boundary stable.
+static inline void add_identity_anchors(
+    const cv::Rect& roi,
+    std::vector<cv::Point2f>& src,
+    std::vector<cv::Point2f>& dst,
+    int inset = 2) {
+
+  if (roi.width <= 0 || roi.height <= 0) return;
+
+  const float x0 = (float)(roi.x + inset);
+  const float y0 = (float)(roi.y + inset);
+  const float x1 = (float)(roi.x + roi.width  - 1 - inset);
+  const float y1 = (float)(roi.y + roi.height - 1 - inset);
+
+  const cv::Point2f corners[4] = {
+    {x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}
+  };
+
+  for (int i = 0; i < 4; ++i) {
+    src.push_back(corners[i]);
+    dst.push_back(corners[i]);  // identity anchor
+  }
+}
+
+
 // ── Per-frame work ───────────────────────────────────────────────────────────
+static inline uint64_t fnv1a64(const uint8_t* p, size_t n) {
+  uint64_t h = 1469598103934665603ull; // FNV offset
+  for (size_t i = 0; i < n; ++i) {
+    h ^= (uint64_t)p[i];
+    h *= 1099511628211ull;             // FNV prime
+  }
+  return h;
+}
+
+static double mean_abs_rgb_diff(const cv::Mat& a, const cv::Mat& b) {
+  cv::Mat diff; cv::absdiff(a, b, diff);
+  cv::Scalar m = cv::mean(diff);
+  // Average only over the channels present
+  double acc = 0.0;
+  for (int c = 0; c < diff.channels(); ++c) acc += m[c];
+  return acc / std::max(1, diff.channels());
+}
+
+static bool env_flag(const char* name) {
+  const char* s = std::getenv(name);
+  return s && *s && s[0] != '0';
+}
+
 static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
                                                      GstVideoFrame* f) {
   auto* self = GST_MOZZA_MP(vf);
@@ -364,11 +471,17 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
   auto* data       = static_cast<uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(f, 0));
 
   if (self->frame_count == 1) {
-    GST_INFO_OBJECT(self, "first frame: %dx%d stride=%d overlay=%d show-landmarks=%d drop=%d dfm=%s",
+    GST_INFO_OBJECT(self, "first frame: %dx%d stride=%d overlay=%d show-landmarks=%d drop=%d dfm=%s (mls grid=%d alpha=%.2f)",
                     W, H, stride, (int)self->overlay, (int)self->show_landmarks, (int)self->drop,
-                    self->dfm ? "yes" : "no");
+                    self->dfm ? "yes" : "no", self->mls ? self->mls->gridSize : -1,
+                    self->mls ? self->mls->alpha : -1.0);
   }
 
+  // Wrap original RGBA buffer
+  cv::Mat img_rgba(H, W, CV_8UC4, data, static_cast<size_t>(stride));
+  if (img_rgba.empty()) return GST_FLOW_OK;
+
+  // Build MpImage for detection
   MpImage img{};
   img.data   = static_cast<const uint8_t*>(data);
   img.width  = W;
@@ -381,10 +494,10 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
                         ((pts == GST_CLOCK_TIME_NONE) ? 0 : (int64_t)GST_TIME_AS_USECONDS(pts));
 
   MpFaceResult out{};
-  auto t0 = std::chrono::steady_clock::now();
-  int rc = MpApi().face_detect(self->mp_ctx, &img, ts_us, &out);
-  auto t1 = std::chrono::steady_clock::now();
-  auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+  const auto t0 = std::chrono::steady_clock::now();
+  const int rc = MpApi().face_detect(self->mp_ctx, &img, ts_us, &out);
+  const auto t1 = std::chrono::steady_clock::now();
+  const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
   auto should_log = [&](guint64 frame) -> bool {
     return (self->log_every > 0) && ((frame % self->log_every) == 1);
@@ -414,14 +527,14 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
     log_landmark_stats(self, f0, W, H);
   }
 
-  // Landmarks → pixel coords (normalized [0..1] → px)
+  // Landmarks → pixel coords
   std::vector<cv::Point2f> L; L.reserve(f0.landmarks_count);
   for (int i = 0; i < f0.landmarks_count; ++i) {
     const MpLandmark& lm = f0.landmarks[i];
     L.emplace_back(lm.x * W, lm.y * H);
   }
 
-  // Optional: draw all landmarks (blue), even without dfm
+  // Optional: draw all landmarks (blue), even without DFM
   if (self->show_landmarks) {
     const uint32_t blue = 0x0066CCFFu;
     for (const auto& p : L) {
@@ -431,53 +544,115 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
     }
   }
 
-  // Deform using MLS if we have a DFM
+  // Apply deformation via DFM + MLS
   if (self->dfm) {
     std::vector<std::vector<cv::Point2f>> srcGroups, dstGroups;
     build_groups_from_dfm(*self->dfm, L, self->alpha, srcGroups, dstGroups);
 
     if (srcGroups.empty()) {
-      GST_WARNING_OBJECT(self, "DFM produced 0 groups — likely landmark topology mismatch "
-                               "(DFM indices vs detector count=%d)", (int)L.size());
+      GST_WARNING_OBJECT(self, "DFM produced 0 groups — topology mismatch? (detector count=%zu)", L.size());
     } else {
+      // Log displacement stats
+      float max_disp = 0.0f;
+      size_t ctrl_pts = 0;
+      for (size_t g = 0; g < srcGroups.size(); ++g) {
+        ctrl_pts += srcGroups[g].size();
+        for (size_t i = 0; i < srcGroups[g].size(); ++i) {
+          cv::Point2f d = dstGroups[g][i] - srcGroups[g][i];
+          float v = std::hypot(d.x, d.y);
+          if (v > max_disp) max_disp = v;
+        }
+      }
       if (should_log(self->frame_count)) {
-        size_t total_pts = 0;
-        for (auto& g : srcGroups) total_pts += g.size();
-        GST_INFO_OBJECT(self, "DFM groups: %zu groups, total control pts=%zu (alpha=%.3f)",
-                        srcGroups.size(), total_pts, self->alpha);
+        GST_INFO_OBJECT(self, "DFM groups: %zu groups, total control pts=%zu (alpha=%.3f, max-disp=%.2f px)",
+                        srcGroups.size(), ctrl_pts, self->alpha, max_disp);
       }
 
-      // View GstVideoFrame as RGBA Mat (uses stride)
-      cv::Mat img_rgba(H, W, CV_8UC4, data, static_cast<size_t>(stride));
+      const bool DBG_INVERT_IF_ZERO = env_flag("MOZZA_DEBUG_INVERT_IF_ZERO");
+      const bool DBG_AFFINE         = env_flag("MOZZA_DEBUG_AFFINE");
 
-      // Preserve original alpha channel
-      cv::Mat alpha_plane(H, W, CV_8UC1);
-      { int fromTo[] = {3, 0}; cv::mixChannels(&img_rgba, 1, &alpha_plane, 1, fromTo, 1); }
+      const auto t0w = std::chrono::steady_clock::now();
 
-      // Convert to BGR for MLS
-      cv::Mat work_bgr;
-      cv::cvtColor(img_rgba, work_bgr, cv::COLOR_RGBA2BGR);
+      for (size_t g = 0; g < srcGroups.size(); ++g) {
+        // Tight ROI around both src & dst; add margin
+        cv::Rect roi = bounding_rect_from_points(srcGroups[g], dstGroups[g], W, H,
+                                                 /*margin=*/12, /*min_size=*/8);
+        if (roi.width <= 1 || roi.height <= 1) continue;
 
-      // MLS on BGR
-      auto t0w = std::chrono::steady_clock::now();
-      for (size_t i = 0; i < srcGroups.size(); ++i) {
-        // If motion looks inverted, swap src/dst once to test:
-        // compute_MLS_on_ROI(work_bgr, *self->mls, dstGroups[i], srcGroups[i]);
-        compute_MLS_on_ROI(work_bgr, *self->mls, srcGroups[i], dstGroups[i]);
+        // Rebase control points to ROI
+        std::vector<cv::Point2f> src_rel; src_rel.reserve(srcGroups[g].size() + 4);
+        std::vector<cv::Point2f> dst_rel; dst_rel.reserve(dstGroups[g].size() + 4);
+        for (size_t i = 0; i < srcGroups[g].size(); ++i) {
+          src_rel.emplace_back(srcGroups[g][i].x - roi.x, srcGroups[g][i].y - roi.y);
+          dst_rel.emplace_back(dstGroups[g][i].x - roi.x, dstGroups[g][i].y - roi.y);
+        }
+        add_identity_anchors(roi, src_rel, dst_rel, /*inset=*/2);
+
+        // Views
+        cv::Mat roi_rgba = img_rgba(roi); // CV_8UC4 view
+        cv::Mat roi_bgr;
+        cv::cvtColor(roi_rgba, roi_bgr, cv::COLOR_RGBA2BGR); // CV_8UC3 copy
+
+        // Debug: types/continuity
+        if (should_log(self->frame_count)) {
+          GST_INFO_OBJECT(self, "ROI[%zu] info: RGBA type=%d cont=%d size=%dx%d step=%zu | BGR type=%d cont=%d size=%dx%d",
+                          g, roi_rgba.type(), roi_rgba.isContinuous(), roi_rgba.cols, roi_rgba.rows, roi_rgba.step,
+                          roi_bgr.type(),  roi_bgr.isContinuous(),  roi_bgr.cols,  roi_bgr.rows);
+        }
+
+        // Hash & snapshot before
+        const uint64_t hash_before = fnv1a64(roi_bgr.data, (size_t)roi_bgr.step * roi_bgr.rows);
+        cv::Mat before_bgr = roi_bgr.clone();
+
+        if (DBG_AFFINE) {
+          // Visible affine translation as a hard sanity check
+          cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
+          cv::warpAffine(roi_bgr, roi_bgr, M, roi_bgr.size(), cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+        } else {
+          // Run MLS in-place on 3-channel ROI
+          compute_MLS_on_ROI(roi_bgr, *self->mls, src_rel, dst_rel);
+        }
+
+        // Delta measurement
+        const uint64_t hash_after = fnv1a64(roi_bgr.data, (size_t)roi_bgr.step * roi_bgr.rows);
+        const double mean_delta   = mean_abs_rgb_diff(before_bgr, roi_bgr);
+
+        // Copy back to RGBA
+        cv::Mat roi_back_rgba;
+        cv::cvtColor(roi_bgr, roi_back_rgba, cv::COLOR_BGR2RGBA);
+        roi_back_rgba.copyTo(roi_rgba);
+
+        if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
+          // Force a visible change to prove copy-back works
+          cv::bitwise_not(roi_rgba, roi_rgba);
+        }
+
+        if (self->overlay) {
+          // Draw ROI rectangle
+          const uint32_t green = 0x00FF00FFu;
+          draw_line(data, W, H, stride, roi.x, roi.y, roi.x + roi.width - 1, roi.y,                green);
+          draw_line(data, W, H, stride, roi.x, roi.y, roi.x,                roi.y + roi.height - 1, green);
+          draw_line(data, W, H, stride, roi.x + roi.width - 1, roi.y,
+                                   roi.x + roi.width - 1, roi.y + roi.height - 1, green);
+          draw_line(data, W, H, stride, roi.x, roi.y + roi.height - 1,
+                                   roi.x + roi.width - 1, roi.y + roi.height - 1, green);
+        }
+
+        // Per-ROI debug stats
+        if (should_log(self->frame_count)) {
+          GST_INFO_OBJECT(self, "MLS ROI[%zu]: x=%d y=%d w=%d h=%d, ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f",
+                          g, roi.x, roi.y, roi.width, roi.height, src_rel.size() - 4,
+                          (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta);
+        }
       }
-      auto t1w = std::chrono::steady_clock::now();
-      auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
+
+      const auto t1w = std::chrono::steady_clock::now();
+      const auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
       if (should_log(self->frame_count)) {
-        GST_INFO_OBJECT(self, "MLS warp %.3f ms", (double)msw);
+        GST_INFO_OBJECT(self, "MLS warp %lld ms", (long long)msw);
       }
 
-      // Convert back to RGBA directly into the Gst buffer
-      cv::cvtColor(work_bgr, img_rgba, cv::COLOR_BGR2RGBA);
-
-      // Restore alpha channel
-      { int toA[] = {0, 3}; cv::mixChannels(&alpha_plane, 1, &img_rgba, 1, toA, 1); }
-
-      // Optional debug overlay of src/dst vectors (draw AFTER warping)
+      // Draw displacement vectors (top)
       if (self->overlay) {
         const uint32_t green = 0x00FF00FFu, red = 0xFF0000FFu;
         for (size_t g = 0; g < srcGroups.size(); ++g) {
@@ -500,8 +675,6 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
   MpApi().face_free_result(&out);
   return GST_FLOW_OK;
 }
-
-
 
 
 // ── Class / init / plugin boilerplate ────────────────────────────────────────
