@@ -570,21 +570,27 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
         dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
         add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
 
-        const uint64_t hash_before = fnv1a64(img_bgr.data, (size_t)img_bgr.step[0] * img_bgr.rows);
-        cv::Mat before_bgr = img_bgr.clone();
+        uint64_t hash_before = fnv1a64(img_bgr.data,
+                                       (size_t)img_bgr.step[0] * img_bgr.rows);
 
+        cv::Mat warped;
         if (DBG_AFFINE) {
           cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
-          cv::warpAffine(img_bgr, img_bgr, M, img_bgr.size(),
+          cv::warpAffine(img_bgr, warped, M, img_bgr.size(),
                          cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
         } else {
-          cv::Mat warped = self->mls->setAllAndGenerate(
+          warped = self->mls->setAllAndGenerate(
               img_bgr, src, dst, img_bgr.cols, img_bgr.rows);
-          if (!warped.empty()) warped.copyTo(img_bgr);
         }
 
-        const uint64_t hash_after = fnv1a64(img_bgr.data, (size_t)img_bgr.step[0] * img_bgr.rows);
-        const double mean_delta = mean_abs_rgb_diff(before_bgr, img_bgr);
+        double mean_delta = 0.0;
+        if (!warped.empty()) {
+          mean_delta = mean_abs_rgb_diff(img_bgr, warped);
+          warped.copyTo(img_bgr);
+        }
+
+        uint64_t hash_after = fnv1a64(img_bgr.data,
+                                      (size_t)img_bgr.step[0] * img_bgr.rows);
 
         if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
           cv::bitwise_not(img_bgr, img_bgr);
