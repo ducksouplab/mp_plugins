@@ -75,7 +75,6 @@ struct _GstMozzaMp {
   MpFaceCtx* mp_ctx;
   std::optional<Deformations> dfm;
   std::unique_ptr<ImgWarp_MLS_Rigid> mls;
-  cv::Mat bgr_tmp;
 
   // stats
   guint64 frame_count;
@@ -559,14 +558,10 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
       const auto t0w = std::chrono::steady_clock::now();
 
-      // ImgWarp_MLS_Rigid only handles 3-channel images; cache a reusable
-      // BGR buffer to avoid reallocating every frame.
-      cv::Mat& img_bgr = self->bgr_tmp;
-      img_bgr.create(H, W, CV_8UC3);
-      cv::cvtColor(img_rgba, img_bgr, cv::COLOR_RGBA2BGR);
-
       // Combine all control points into a single warp to avoid repeatedly
-      // warping the entire image for each group.
+      // warping the entire image for each group.  ImgWarp_MLS_Rigid now
+      // supports 4-channel RGBA, so we operate directly on the original
+      // buffer.
       std::vector<cv::Point2f> src;
       std::vector<cv::Point2f> dst;
       src.reserve(ctrl_pts + 4);
@@ -579,37 +574,37 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
       uint64_t hash_before = 0;
       if (log_now) {
-        hash_before = fnv1a64(img_bgr.data,
-                              (size_t)img_bgr.step[0] * img_bgr.rows);
+        hash_before = fnv1a64(img_rgba.data,
+                              (size_t)img_rgba.step[0] * img_rgba.rows);
       }
 
       cv::Mat warped;
       if (DBG_AFFINE) {
         cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
-        cv::warpAffine(img_bgr, warped, M, img_bgr.size(),
+        cv::warpAffine(img_rgba, warped, M, img_rgba.size(),
                        cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
       } else {
         warped = self->mls->setAllAndGenerate(
-            img_bgr, src, dst, img_bgr.cols, img_bgr.rows);
+            img_rgba, src, dst, img_rgba.cols, img_rgba.rows);
       }
 
       double mean_delta = 0.0;
       const bool need_mean_delta = DBG_INVERT_IF_ZERO || log_now;
       if (need_mean_delta && !warped.empty()) {
-        mean_delta = mean_abs_rgb_diff(img_bgr, warped);
+        mean_delta = mean_abs_rgb_diff(img_rgba, warped);
       }
       if (!warped.empty()) {
-        warped.copyTo(img_bgr);
+        warped.copyTo(img_rgba);
       }
 
       uint64_t hash_after = 0;
       if (log_now) {
-        hash_after = fnv1a64(img_bgr.data,
-                             (size_t)img_bgr.step[0] * img_bgr.rows);
+        hash_after = fnv1a64(img_rgba.data,
+                             (size_t)img_rgba.step[0] * img_rgba.rows);
       }
 
       if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
-        cv::bitwise_not(img_bgr, img_bgr);
+        cv::bitwise_not(img_rgba, img_rgba);
       }
 
       if (log_now) {
@@ -619,8 +614,6 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
           (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
           (hash_before == hash_after ? "  (no byte change!)" : ""));
       }
-
-      cv::cvtColor(img_bgr, img_rgba, cv::COLOR_BGR2RGBA);
 
       const auto t1w = std::chrono::steady_clock::now();
       if (log_now) {

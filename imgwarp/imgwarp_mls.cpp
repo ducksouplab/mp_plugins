@@ -5,6 +5,7 @@
 #include <limits>
 
 using cv::Vec3b;
+using cv::Vec4b;
 
 // Small helper: env flag to toggle diagnostics (set IMGWARP_DEBUG=1)
 static inline bool IMGWARP_DIAG() {
@@ -161,14 +162,13 @@ Mat ImgWarp_MLS::genNewImg(const Mat &oriImg, double transRatio) {
                     nxi1 = std::ceil(nx);
                     nyi1 = std::ceil(ny);
 
-                    if (oriImg.channels() == 1)
+                    if (oriImg.channels() == 1) {
                         newImg.at<uchar>(i + di, j + dj) = bilinear_interp(
                             ny - nyi, nx - nxi, oriImg.at<uchar>(nyi, nxi),
                             oriImg.at<uchar>(nyi, nxi1),
                             oriImg.at<uchar>(nyi1, nxi),
                             oriImg.at<uchar>(nyi1, nxi1));
-                    else {
-                        // NOTE: library only handles 3-channel in this branch; callers should pass BGR.
+                    } else if (oriImg.channels() == 3) {
                         for (int ll = 0; ll < 3; ll++)
                             newImg.at<Vec3b>(i + di, j + dj)[ll] =
                                 bilinear_interp(
@@ -177,6 +177,15 @@ Mat ImgWarp_MLS::genNewImg(const Mat &oriImg, double transRatio) {
                                     oriImg.at<Vec3b>(nyi, nxi1)[ll],
                                     oriImg.at<Vec3b>(nyi1, nxi)[ll],
                                     oriImg.at<Vec3b>(nyi1, nxi1)[ll]);
+                    } else if (oriImg.channels() == 4) {
+                        for (int ll = 0; ll < 4; ll++)
+                            newImg.at<Vec4b>(i + di, j + dj)[ll] =
+                                bilinear_interp(
+                                    ny - nyi, nx - nxi,
+                                    oriImg.at<Vec4b>(nyi, nxi)[ll],
+                                    oriImg.at<Vec4b>(nyi, nxi1)[ll],
+                                    oriImg.at<Vec4b>(nyi1, nxi)[ll],
+                                    oriImg.at<Vec4b>(nyi1, nxi1)[ll]);
                     }
                 }
         }
