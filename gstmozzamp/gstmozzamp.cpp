@@ -531,20 +531,25 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
     if (srcGroups.empty()) {
       GST_WARNING_OBJECT(self, "DFM produced 0 groups — topology mismatch? (detector count=%zu)", L.size());
     } else {
+      const bool log_now = should_log(self->frame_count);
+
       // Displacement stats (from DFM)
-      float max_disp = 0.0f, mean_disp = 0.0f;
-      size_t ctrl_pts = 0, samples = 0;
+      size_t ctrl_pts = 0;
+      float  max_disp = 0.0f, mean_disp = 0.0f;
+      size_t samples  = 0;
       for (size_t g = 0; g < srcGroups.size(); ++g) {
         ctrl_pts += srcGroups[g].size();
-        for (size_t i = 0; i < srcGroups[g].size(); ++i) {
-          cv::Point2f d = dstGroups[g][i] - srcGroups[g][i];
-          float v = std::hypot(d.x, d.y);
-          max_disp = std::max(max_disp, v);
-          mean_disp += v; ++samples;
+        if (log_now) {
+          for (size_t i = 0; i < srcGroups[g].size(); ++i) {
+            cv::Point2f d = dstGroups[g][i] - srcGroups[g][i];
+            float v = std::hypot(d.x, d.y);
+            max_disp = std::max(max_disp, v);
+            mean_disp += v; ++samples;
+          }
         }
       }
-      if (samples) mean_disp /= samples;
-      if (should_log(self->frame_count)) {
+      if (log_now && samples) mean_disp /= samples;
+      if (log_now) {
         GST_INFO_OBJECT(self, "DFM groups=%zu ctrl=%zu alpha=%.3f mean|Δ|=%.2f max|Δ|=%.2f",
                         srcGroups.size(), ctrl_pts, self->alpha, mean_disp, max_disp);
       }
@@ -572,8 +577,11 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
       }
       add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
 
-      uint64_t hash_before = fnv1a64(img_bgr.data,
-                                     (size_t)img_bgr.step[0] * img_bgr.rows);
+      uint64_t hash_before = 0;
+      if (log_now) {
+        hash_before = fnv1a64(img_bgr.data,
+                              (size_t)img_bgr.step[0] * img_bgr.rows);
+      }
 
       cv::Mat warped;
       if (DBG_AFFINE) {
@@ -586,19 +594,25 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
       }
 
       double mean_delta = 0.0;
-      if (!warped.empty()) {
+      const bool need_mean_delta = DBG_INVERT_IF_ZERO || log_now;
+      if (need_mean_delta && !warped.empty()) {
         mean_delta = mean_abs_rgb_diff(img_bgr, warped);
+      }
+      if (!warped.empty()) {
         warped.copyTo(img_bgr);
       }
 
-      uint64_t hash_after = fnv1a64(img_bgr.data,
-                                    (size_t)img_bgr.step[0] * img_bgr.rows);
+      uint64_t hash_after = 0;
+      if (log_now) {
+        hash_after = fnv1a64(img_bgr.data,
+                             (size_t)img_bgr.step[0] * img_bgr.rows);
+      }
 
       if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
         cv::bitwise_not(img_bgr, img_bgr);
       }
 
-      if (should_log(self->frame_count)) {
+      if (log_now) {
         GST_INFO_OBJECT(self,
           "MLS combined: groups=%zu ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
           srcGroups.size(), (size_t)src.size(),
@@ -609,8 +623,8 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
       cv::cvtColor(img_bgr, img_rgba, cv::COLOR_BGR2RGBA);
 
       const auto t1w = std::chrono::steady_clock::now();
-      const auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
-      if (should_log(self->frame_count)) {
+      if (log_now) {
+        const auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
         GST_INFO_OBJECT(self, "MLS warp %lld ms", (long long)msw);
       }
 
