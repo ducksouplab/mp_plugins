@@ -1,19 +1,18 @@
 #include "imgwarp_mls.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <limits>
 
 using cv::Vec3b;
 
-// Small helper: env flag to toggle diagnostics - Change when debuging is done
+// Small helper: env flag to toggle diagnostics (set IMGWARP_DEBUG=1)
 static inline bool IMGWARP_DIAG() {
-  static int on = 1;
-  // Uncomment the following to make this printing accessible through an env var
-  //static int on = -1;
-  //if (on == -1) {
-  //  const char* e = std::getenv("IMGWARP_DEBUG");
-  //  on = (e && *e && e[0] != '0') ? 1 : 0;
-  // }
+  static int on = -1;
+  if (on == -1) {
+    const char* e = std::getenv("IMGWARP_DEBUG");
+    on = (e && *e && e[0] != '0') ? 1 : 0;
+  }
   return on == 1;
 }
 
