@@ -47,6 +47,8 @@
 #define PACKAGE "mozza_mp"
 #endif
 
+static constexpr size_t kMaxLandmarks = 478;  // MediaPipe Face Landmarker
+
 GST_DEBUG_CATEGORY_STATIC(gst_mozza_mp_debug_category);
 #define GST_CAT_DEFAULT gst_mozza_mp_debug_category
 
@@ -76,6 +78,8 @@ struct _GstMozzaMp {
   std::optional<Deformations> dfm;
   std::unique_ptr<ImgWarp_MLS_Rigid> mls;
   cv::Mat bgr_tmp;
+  std::vector<cv::Point2f> src;
+  std::vector<cv::Point2f> dst;
 
   // stats
   guint64 frame_count;
@@ -349,8 +353,13 @@ static void gst_mozza_mp_finalize(GObject* object) {
   G_OBJECT_CLASS(gst_mozza_mp_parent_class)->finalize(object);
 }
 
-static gboolean gst_mozza_mp_set_info(GstVideoFilter*, GstCaps*, GstVideoInfo*,
-                                      GstCaps*, GstVideoInfo*) { return TRUE; }
+static gboolean gst_mozza_mp_set_info(GstVideoFilter* vf, GstCaps*, GstVideoInfo*,
+                                      GstCaps*, GstVideoInfo*) {
+  auto* self = GST_MOZZA_MP(vf);
+  self->src.reserve(kMaxLandmarks + 4);
+  self->dst.reserve(kMaxLandmarks + 4);
+  return TRUE;
+}
 
 
 
@@ -567,13 +576,18 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
       // Combine all control points into a single warp to avoid repeatedly
       // warping the entire image for each group.
-      std::vector<cv::Point2f> src;
-      std::vector<cv::Point2f> dst;
-      src.reserve(ctrl_pts + 4);
-      dst.reserve(ctrl_pts + 4);
+      auto& src = self->src;
+      auto& dst = self->dst;
+      src.resize(ctrl_pts);
+      dst.resize(ctrl_pts);
+      size_t offset = 0;
       for (size_t g = 0; g < srcGroups.size(); ++g) {
-        src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
-        dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
+        const size_t n = srcGroups[g].size();
+        if (n) {
+          std::memcpy(src.data() + offset, srcGroups[g].data(), n * sizeof(cv::Point2f));
+          std::memcpy(dst.data() + offset, dstGroups[g].data(), n * sizeof(cv::Point2f));
+          offset += n;
+        }
       }
       add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
 
