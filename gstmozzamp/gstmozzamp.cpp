@@ -556,9 +556,14 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
       cv::Mat img_bgr;
       cv::cvtColor(img_rgba, img_bgr, cv::COLOR_RGBA2BGR);
 
+      std::vector<cv::Point2f> src;
+      std::vector<cv::Point2f> dst;
+
       for (size_t g = 0; g < srcGroups.size(); ++g) {
-        std::vector<cv::Point2f> src = srcGroups[g];
-        std::vector<cv::Point2f> dst = dstGroups[g];
+        src.clear();
+        src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
+        dst.clear();
+        dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
         add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
 
         const uint64_t hash_before = fnv1a64(img_bgr.data, (size_t)img_bgr.step[0] * img_bgr.rows);
