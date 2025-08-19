@@ -75,6 +75,7 @@ struct _GstMozzaMp {
   MpFaceCtx* mp_ctx;
   std::optional<Deformations> dfm;
   std::unique_ptr<ImgWarp_MLS_Rigid> mls;
+  cv::Mat bgr_tmp;
 
   // stats
   guint64 frame_count;
@@ -553,7 +554,10 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
       const auto t0w = std::chrono::steady_clock::now();
 
-      cv::Mat img_bgr;
+      // ImgWarp_MLS_Rigid only handles 3-channel images; cache a reusable
+      // BGR buffer to avoid reallocating every frame.
+      cv::Mat& img_bgr = self->bgr_tmp;
+      img_bgr.create(H, W, CV_8UC3);
       cv::cvtColor(img_rgba, img_bgr, cv::COLOR_RGBA2BGR);
 
       for (size_t g = 0; g < srcGroups.size(); ++g) {
