@@ -77,11 +77,18 @@ struct _GstMozzaMp {
   std::unique_ptr<ImgWarp_MLS_Rigid> mls;
   cv::Mat bgr_tmp;
 
+  // debug flags (cached from environment)
+  gboolean dbg_invert_if_zero;
+  gboolean dbg_affine;
+  gboolean dbg_hash;
+
   // stats
   guint64 frame_count;
 };
 
 G_END_DECLS
+
+static bool env_flag(const char* name);
 
 // ── Properties ────────────────────────────────────────────────────────────────
 enum {
@@ -275,6 +282,15 @@ static gboolean gst_mozza_mp_start(GstBaseTransform* base) {
     return FALSE;
   }
 
+  // Cache MOZZA_DEBUG_* environment flags once
+  self->dbg_invert_if_zero = env_flag("MOZZA_DEBUG_INVERT_IF_ZERO");
+  self->dbg_affine         = env_flag("MOZZA_DEBUG_AFFINE");
+#if !defined(NDEBUG)
+  self->dbg_hash           = env_flag("MOZZA_DEBUG_HASH");
+#else
+  self->dbg_hash           = FALSE;
+#endif
+
   MpFaceLandmarkerOptions opts{};
   opts.model_path       = self->model_path;
   opts.max_faces        = 1;
@@ -383,6 +399,7 @@ static inline void add_identity_anchors(
 
 // ── Per-frame work ───────────────────────────────────────────────────────────
 
+#if !defined(NDEBUG)
 // Streamed/seeded FNV-1a (64-bit) — lets us continue hashing across rows.
 // FNV-1a 64-bit, supports both 2-arg and 3-arg use (seed is optional)
 static inline uint64_t fnv1a64(const uint8_t* p, size_t n, uint64_t seed = 14695981039346656037ULL) {
@@ -394,17 +411,7 @@ static inline uint64_t fnv1a64(const uint8_t* p, size_t n, uint64_t seed = 14695
   }
   return h;
 }
-
-
-static inline uint64_t hash_frame_rgba(const uint8_t* base, int W, int H, int stride) {
-  // Hash the visible RGBA bytes row-by-row with FNV-1a64 (streamed).
-  uint64_t h = 0ULL;  // 0 → function will initialize to FNV basis
-  for (int y = 0; y < H; ++y) {
-    const uint8_t* row = base + static_cast<size_t>(y) * static_cast<size_t>(stride);
-    h = fnv1a64(row, static_cast<size_t>(W) * 4u, h);
-  }
-  return h;
-}
+#endif
 
 
 static double mean_abs_rgb_diff(const cv::Mat& a, const cv::Mat& b) {
@@ -427,6 +434,26 @@ static inline uint32_t read_rgba_px(const uint8_t* data, int stride, int x, int 
   const uint8_t* p = data + (size_t)y * stride + (size_t)x * 4;
   // Pack as 0xAABBGGRR to make channel order obvious in logs.
   return (uint32_t)p[3] << 24 | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | (uint32_t)p[0];
+}
+
+// Cheap sample-based checksum over 4 image corners (BGR image)
+static inline uint32_t sample_checksum_bgr(const cv::Mat& img) {
+  if (img.empty() || img.channels() < 3) return 0;
+  const int W = img.cols, H = img.rows; const int stride = img.step[0];
+  const uint8_t* base = img.data;
+  const uint8_t* p0 = base;
+  const uint8_t* p1 = base + (size_t)(W - 1) * 3;
+  const uint8_t* p2 = base + (size_t)(H - 1) * stride;
+  const uint8_t* p3 = p2 + (size_t)(W - 1) * 3;
+  auto pack = [](const uint8_t* p) -> uint32_t {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+  };
+  uint32_t c = 0;
+  c ^= pack(p0);
+  c ^= pack(p1);
+  c ^= pack(p2);
+  c ^= pack(p3);
+  return c;
 }
 
 static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
@@ -554,9 +581,6 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
                         srcGroups.size(), ctrl_pts, self->alpha, mean_disp, max_disp);
       }
 
-      const bool DBG_INVERT_IF_ZERO = env_flag("MOZZA_DEBUG_INVERT_IF_ZERO");
-      const bool DBG_AFFINE         = env_flag("MOZZA_DEBUG_AFFINE");
-
       const auto t0w = std::chrono::steady_clock::now();
 
       // ImgWarp_MLS_Rigid only handles 3-channel images; cache a reusable
@@ -577,14 +601,20 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
       }
       add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
 
+#if !defined(NDEBUG)
       uint64_t hash_before = 0;
-      if (log_now) {
+      if (log_now && self->dbg_hash) {
         hash_before = fnv1a64(img_bgr.data,
                               (size_t)img_bgr.step[0] * img_bgr.rows);
       }
+#endif
+      uint32_t chk_before = 0;
+      if (log_now && (!self->dbg_hash)) {
+        chk_before = sample_checksum_bgr(img_bgr);
+      }
 
       cv::Mat warped;
-      if (DBG_AFFINE) {
+      if (self->dbg_affine) {
         cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
         cv::warpAffine(img_bgr, warped, M, img_bgr.size(),
                        cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
@@ -594,7 +624,7 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
       }
 
       double mean_delta = 0.0;
-      const bool need_mean_delta = DBG_INVERT_IF_ZERO || log_now;
+      const bool need_mean_delta = self->dbg_invert_if_zero || log_now;
       if (need_mean_delta && !warped.empty()) {
         mean_delta = mean_abs_rgb_diff(img_bgr, warped);
       }
@@ -602,22 +632,39 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
         warped.copyTo(img_bgr);
       }
 
+#if !defined(NDEBUG)
       uint64_t hash_after = 0;
-      if (log_now) {
+      if (log_now && self->dbg_hash) {
         hash_after = fnv1a64(img_bgr.data,
                              (size_t)img_bgr.step[0] * img_bgr.rows);
       }
+#endif
+      uint32_t chk_after = 0;
+      if (log_now && (!self->dbg_hash)) {
+        chk_after = sample_checksum_bgr(img_bgr);
+      }
 
-      if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
+      if (self->dbg_invert_if_zero && mean_delta < 0.5) {
         cv::bitwise_not(img_bgr, img_bgr);
       }
 
       if (log_now) {
-        GST_INFO_OBJECT(self,
-          "MLS combined: groups=%zu ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
-          srcGroups.size(), (size_t)src.size(),
-          (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
-          (hash_before == hash_after ? "  (no byte change!)" : ""));
+#if !defined(NDEBUG)
+        if (self->dbg_hash) {
+          GST_INFO_OBJECT(self,
+            "MLS combined: groups=%zu ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
+            srcGroups.size(), (size_t)src.size(),
+            (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
+            (hash_before == hash_after ? "  (no byte change!)" : ""));
+        } else
+#endif
+        {
+          GST_INFO_OBJECT(self,
+            "MLS combined: groups=%zu ctrl=%zu (+4 anchors) | chk %08x -> %08x | meanΔ=%.2f%s",
+            srcGroups.size(), (size_t)src.size(),
+            chk_before, chk_after, mean_delta,
+            (chk_before == chk_after ? "  (no sample change!)" : ""));
+        }
       }
 
       cv::cvtColor(img_bgr, img_rgba, cv::COLOR_BGR2RGBA);
@@ -773,6 +820,9 @@ static void gst_mozza_mp_init(GstMozzaMp* self) {
   self->user_id        = nullptr;
   self->frame_count    = 0;
   self->mp_ctx         = nullptr;
+  self->dbg_invert_if_zero = FALSE;
+  self->dbg_affine         = FALSE;
+  self->dbg_hash           = FALSE;
 }
 
 static gboolean plugin_init(GstPlugin* plugin) {
