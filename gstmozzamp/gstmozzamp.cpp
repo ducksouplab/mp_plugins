@@ -352,64 +352,10 @@ static gboolean gst_mozza_mp_set_info(GstVideoFilter*, GstCaps*, GstVideoInfo*,
                                       GstCaps*, GstVideoInfo*) { return TRUE; }
 
 
-// Compute a tight ROI that covers BOTH src and dst points, expand by `margin`,
-// clamp to image bounds [0..W/H), and make sure it’s at least 2×2 pixels.
-static inline cv::Rect bounding_rect_from_points(
-    const std::vector<cv::Point2f>& src,
-    const std::vector<cv::Point2f>& dst,
-    int W, int H,
-    int margin = 16,
-    int min_size = 2) {
 
-  if ((src.empty() && dst.empty()) || W <= 0 || H <= 0) {
-    return cv::Rect(0, 0, 0, 0);
-  }
-
-  float minx =  std::numeric_limits<float>::infinity();
-  float miny =  std::numeric_limits<float>::infinity();
-  float maxx = -std::numeric_limits<float>::infinity();
-  float maxy = -std::numeric_limits<float>::infinity();
-
-  auto grow = [&](const std::vector<cv::Point2f>& v){
-    for (const auto& p : v) {
-      if (p.x < minx) minx = p.x;
-      if (p.y < miny) miny = p.y;
-      if (p.x > maxx) maxx = p.x;
-      if (p.y > maxy) maxy = p.y;
-    }
-  };
-  grow(src);
-  grow(dst);
-
-  // Expand by margin
-  minx = std::floor(minx) - margin;
-  miny = std::floor(miny) - margin;
-  maxx = std::ceil (maxx) + margin;
-  maxy = std::ceil (maxy) + margin;
-
-  // Clamp to image bounds
-  int x0 = std::max(0,              (int)minx);
-  int y0 = std::max(0,              (int)miny);
-  int x1 = std::min(W - 1,          (int)maxx);
-  int y1 = std::min(H - 1,          (int)maxy);
-
-  // Ensure non-empty
-  if (x1 <= x0) x1 = std::min(W - 1, x0 + (min_size - 1));
-  if (y1 <= y0) y1 = std::min(H - 1, y0 + (min_size - 1));
-
-  // width/height are inclusive -> +1
-  int rw = std::max(min_size, (x1 - x0 + 1));
-  int rh = std::max(min_size, (y1 - y0 + 1));
-
-  // Final clamp (in case min_size pushed us out)
-  if (x0 + rw > W) x0 = std::max(0, W - rw);
-  if (y0 + rh > H) y0 = std::max(0, H - rh);
-
-  return cv::Rect(x0, y0, rw, rh);
-}
-
-// Add 4 identity “pin” anchors (same src==dst) near ROI corners, slightly inset
-// so they are strictly inside the ROI. This helps keep the boundary stable.
+// Add 4 identity “pin” anchors (same src==dst) near rectangle corners, slightly
+// inset so they are strictly inside the region. This helps keep the boundary
+// stable during MLS warping.
 static inline void add_identity_anchors(
     const cv::Rect& roi,
     std::vector<cv::Point2f>& src,
@@ -607,87 +553,44 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
       const auto t0w = std::chrono::steady_clock::now();
 
+      cv::Mat img_bgr;
+      cv::cvtColor(img_rgba, img_bgr, cv::COLOR_RGBA2BGR);
+
       for (size_t g = 0; g < srcGroups.size(); ++g) {
-        // Tight ROI around both src & dst; add margin
-        cv::Rect roi = bounding_rect_from_points(srcGroups[g], dstGroups[g], W, H,
-                                                 /*margin=*/12, /*min_size=*/8);
-        if (roi.width <= 1 || roi.height <= 1) continue;
+        std::vector<cv::Point2f> src = srcGroups[g];
+        std::vector<cv::Point2f> dst = dstGroups[g];
+        add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
 
-        // Rebase control points to ROI
-        std::vector<cv::Point2f> src_rel; src_rel.reserve(srcGroups[g].size() + 4);
-        std::vector<cv::Point2f> dst_rel; dst_rel.reserve(dstGroups[g].size() + 4);
-        for (size_t i = 0; i < srcGroups[g].size(); ++i) {
-          src_rel.emplace_back(srcGroups[g][i].x - roi.x, srcGroups[g][i].y - roi.y);
-          dst_rel.emplace_back(dstGroups[g][i].x - roi.x, dstGroups[g][i].y - roi.y);
-        }
-        add_identity_anchors(roi, src_rel, dst_rel, /*inset=*/2);
-
-        // Views
-        cv::Mat roi_rgba = img_rgba(roi); // CV_8UC4 view
-        cv::Mat roi_bgr;
-        cv::cvtColor(roi_rgba, roi_bgr, cv::COLOR_RGBA2BGR); // CV_8UC3 copy
-
-        // Pre-warp debug info
-        if (should_log(self->frame_count)) {
-          GST_INFO_OBJECT(self,
-            "ROI[%zu] info: RGBA type=%d cont=%d size=%dx%d step=%zu | BGR type=%d cont=%d size=%dx%d step=%zu",
-            g,
-            roi_rgba.type(), roi_rgba.isContinuous(), roi_rgba.cols, roi_rgba.rows, (size_t)roi_rgba.step[0],
-            roi_bgr.type(),  roi_bgr.isContinuous(),  roi_bgr.cols,  roi_bgr.rows,  (size_t)roi_bgr.step[0]);
-        }
-
-        // Hash & snapshot before
-        const uint64_t hash_before = fnv1a64(roi_bgr.data, (size_t)roi_bgr.step[0] * roi_bgr.rows);
-        cv::Mat before_bgr = roi_bgr.clone();
+        const uint64_t hash_before = fnv1a64(img_bgr.data, (size_t)img_bgr.step[0] * img_bgr.rows);
+        cv::Mat before_bgr = img_bgr.clone();
 
         if (DBG_AFFINE) {
-          // Visible affine translation as a sanity check
           cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
-          cv::warpAffine(roi_bgr, roi_bgr, M, roi_bgr.size(),
+          cv::warpAffine(img_bgr, img_bgr, M, img_bgr.size(),
                          cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
         } else {
-          // Run MLS in-place on 3-channel ROI
           cv::Mat warped = self->mls->setAllAndGenerate(
-              roi_bgr, src_rel, dst_rel, roi_bgr.cols, roi_bgr.rows);
-          if (!warped.empty()) warped.copyTo(roi_bgr);
+              img_bgr, src, dst, img_bgr.cols, img_bgr.rows);
+          if (!warped.empty()) warped.copyTo(img_bgr);
         }
 
-        // Delta measurement
-        const uint64_t hash_after = fnv1a64(roi_bgr.data, (size_t)roi_bgr.step[0] * roi_bgr.rows);
-        const double   mean_delta = mean_abs_rgb_diff(before_bgr, roi_bgr);
-
-        // Copy back to RGBA (BGR→RGBA)
-        cv::Mat roi_back_rgba;
-        cv::cvtColor(roi_bgr, roi_back_rgba, cv::COLOR_BGR2RGBA);
-        roi_back_rgba.copyTo(roi_rgba);
+        const uint64_t hash_after = fnv1a64(img_bgr.data, (size_t)img_bgr.step[0] * img_bgr.rows);
+        const double mean_delta = mean_abs_rgb_diff(before_bgr, img_bgr);
 
         if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
-          // Force a visible change to prove copy-back works
-          cv::bitwise_not(roi_rgba, roi_rgba);
+          cv::bitwise_not(img_bgr, img_bgr);
         }
 
-        // Optional ROI rectangle overlay
-        if (self->overlay) {
-          const uint32_t green = 0x00FF00FFu;
-          draw_line(data, W, H, stride, roi.x, roi.y,
-                    roi.x + roi.width - 1, roi.y, green);                          // top
-          draw_line(data, W, H, stride, roi.x, roi.y,
-                    roi.x, roi.y + roi.height - 1, green);                         // left
-          draw_line(data, W, H, stride, roi.x + roi.width - 1, roi.y,
-                    roi.x + roi.width - 1, roi.y + roi.height - 1, green);         // right
-          draw_line(data, W, H, stride, roi.x, roi.y + roi.height - 1,
-                    roi.x + roi.width - 1, roi.y + roi.height - 1, green);         // bottom
-        }
-
-        // Per-ROI debug stats
         if (should_log(self->frame_count)) {
           GST_INFO_OBJECT(self,
-            "MLS ROI[%zu]: x=%d y=%d w=%d h=%d, ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
-            g, roi.x, roi.y, roi.width, roi.height, (size_t)src_rel.size(),
+            "MLS group[%zu]: ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
+            g, (size_t)src.size(),
             (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
             (hash_before == hash_after ? "  (no byte change!)" : ""));
         }
       }
+
+      cv::cvtColor(img_bgr, img_rgba, cv::COLOR_BGR2RGBA);
 
       const auto t1w = std::chrono::steady_clock::now();
       const auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
