@@ -46,7 +46,10 @@ sudo cp -r out /home/deploy/deploy-ducksoup/app/plugins/mp_plugins
 sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_landmarker.task
 ```
 ## Use it in DuckSoup mirror mode
-mozzamp model=plugins/face_landmarker.task
+
+This is working:
+
+video/x-raw,format=RGBA ! identity single-segment=true ! mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_mp.dfm alpha=8 overlay=true show-landmarks=true force-rgb=true ignore-timestamps=false log-every=30
 
 # Quick runs
 
