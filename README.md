@@ -28,6 +28,19 @@ docker run --rm -it mozzamp:latest \
 ```
 You should see properties: model, max-faces, draw, radius, color.
 
+## ImgWarp debug logs
+
+The underlying ImgWarp library can emit verbose diagnostics. These logs are
+disabled by default. To enable them, set the `IMGWARP_DEBUG` environment
+variable to a non-zero value before running any GStreamer command, for example:
+
+```bash
+IMGWARP_DEBUG=1 gst-launch-1.0 ...
+```
+
+The messages are written to standard error and can help troubleshoot warping
+issues.
+
 ## Get the .task model
 ```
 chmod +x download_face_landmarker_model.sh
