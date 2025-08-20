@@ -4,6 +4,8 @@
 #include "opencv2/opencv.hpp"
 #include <vector>
 
+namespace mp_imgwarp {
+
 using std::vector;
 using cv::Mat;
 using cv::Mat_;
@@ -91,5 +93,7 @@ inline void ImgWarp_MLS::setSrcPoints(const vector<Point_<float> > &qsrc) {
     newDotL.clear(); newDotL.reserve(nPoint);
     for (size_t i = 0; i < qsrc.size(); ++i) newDotL.push_back(qsrc[i]);
 }
+
+}  // namespace mp_imgwarp
 
 #endif // IMGTRANS_MLS_H

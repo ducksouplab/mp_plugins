@@ -3,6 +3,8 @@
 #include <cmath>
 #include <limits>
 
+namespace mp_imgwarp {
+
 static inline bool IMGWARP_DIAG() {
   static int on = -1;
   if (on == -1) {
@@ -151,4 +153,6 @@ void ImgWarp_MLS_Rigid::calcDelta() {
         for (i = 0; i < nPoint; ++i) newDotL[i] *= ratio; // restore
     }
 }
+
+}  // namespace mp_imgwarp
 

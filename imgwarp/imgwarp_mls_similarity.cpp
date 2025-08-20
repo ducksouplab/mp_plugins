@@ -16,6 +16,8 @@
 
 #include "imgwarp_mls_similarity.h"
 
+namespace mp_imgwarp {
+
 void ImgWarp_MLS_Similarity::calcDelta() {
     int i, j, k;
 
@@ -103,3 +105,5 @@ void ImgWarp_MLS_Similarity::calcDelta() {
 
     delete[] w;
 }
+
+}  // namespace mp_imgwarp

@@ -19,8 +19,10 @@
 #include "imgwarp_mls.h"
 #include "opencv2/opencv.hpp"
 #include <vector>
-using std::vector;
 
+namespace mp_imgwarp {
+
+using std::vector;
 using cv::Mat;
 using cv::Mat_;
 using cv::Point_;
@@ -30,8 +32,7 @@ using cv::Point_;
  * It will try to keep the image rigid. You can set preScale if you
  * can accept uniform transform.
  */
-class ImgWarp_MLS_Rigid : public ImgWarp_MLS
-{
+class ImgWarp_MLS_Rigid : public ImgWarp_MLS {
 public:
     //! Whether do unify scale on the points before deformation
     bool preScale;
@@ -39,5 +40,7 @@ public:
     ImgWarp_MLS_Rigid();
     void calcDelta();
 };
+
+}  // namespace mp_imgwarp
 
 #endif // IMGTRANS_MLS_RIGID_H

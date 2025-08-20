@@ -19,8 +19,10 @@
 #include "imgwarp_mls.h"
 #include "opencv2/opencv.hpp"
 #include <vector>
-using std::vector;
 
+namespace mp_imgwarp {
+
+using std::vector;
 using cv::Mat;
 using cv::Mat_;
 using cv::Point_;
@@ -30,5 +32,7 @@ class ImgWarp_MLS_Similarity : public ImgWarp_MLS {
    public:
     void calcDelta();
 };
+
+}  // namespace mp_imgwarp
 
 #endif  // IMGTRANS_MLS_SIMILARITY_H

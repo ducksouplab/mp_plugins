@@ -11,6 +11,9 @@
 #include <algorithm>
 #include <cstdlib>
 #include <vector>
+
+namespace mp_imgwarp {
+
 using cv::Point_;
 using std::vector;
 
@@ -36,4 +39,6 @@ vector<Triangle> delaunayDiv(const vector<Point_<T> > &vP, cv::Rect boundRect) {
     }
     return output;
 }
+
+}  // namespace mp_imgwarp
 

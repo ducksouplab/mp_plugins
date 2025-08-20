@@ -74,7 +74,7 @@ struct _GstMozzaMp {
   // runtime + helpers
   MpFaceCtx* mp_ctx;
   std::optional<Deformations> dfm;
-  std::unique_ptr<ImgWarp_MLS_Rigid> mls;
+  std::unique_ptr<mp_imgwarp::ImgWarp_MLS_Rigid> mls;
 
   // stats
   guint64 frame_count;
@@ -295,7 +295,7 @@ static gboolean gst_mozza_mp_start(GstBaseTransform* base) {
   GST_INFO_OBJECT(self, "mp_face_landmarker created in %lld ms (delegate=%s, threads=%d)",
                   (long long)ms, opts.delegate, opts.num_threads);
 
-  self->mls = std::make_unique<ImgWarp_MLS_Rigid>();
+  self->mls = std::make_unique<mp_imgwarp::ImgWarp_MLS_Rigid>();
   self->mls->gridSize = 5;
   self->mls->preScale = true;
   self->mls->alpha    = 1.4;
