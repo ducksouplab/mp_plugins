@@ -1,13 +1,15 @@
 #include "imgwarp_piecewiseaffine.h"
 #include "delaunay.h"
 
+namespace mp_imgwarp {
+
 using cv::Point2d;
 
-ImgWarp_PieceWiseAffine::ImgWarp_PieceWiseAffine(void) {
+ImgWarp_PieceWiseAffine::ImgWarp_PieceWiseAffine() {
     backGroundFillAlg = BGNone;
 }
 
-ImgWarp_PieceWiseAffine::~ImgWarp_PieceWiseAffine(void) {}
+ImgWarp_PieceWiseAffine::~ImgWarp_PieceWiseAffine() {}
 
 Point_<double> ImgWarp_PieceWiseAffine::getMLSDelta(int x, int y) {
     static Point_<double> swq, qstar, newP, tmpP;
@@ -108,13 +110,13 @@ void ImgWarp_PieceWiseAffine::calcDelta() {
         oL1.push_back(Point2d(tarW - 1, tarH - 1));
     }
     // In order preserv the background
-    V = ::delaunayDiv(oL1, boundRect);
+    V = delaunayDiv(oL1, boundRect);
 
     // Note: the following code requires highgui. Skipping them.
     //     vector< TriangleInID > Vt;
     // //     vector< Triangle >::iterator it;
     // //     cv::Rect_<int> boundRect(0, 0, tarW, tarH);
-    //     Vt = ::delaunayDivInID(oldDotL, boundRect);
+    //     Vt = delaunayDivInID(oldDotL, boundRect);
     //Mat_<uchar> imgTmp = Mat_<uchar>::zeros(tarH, tarW);
     //for (it = V.begin(); it != V.end(); it++) {
         //cv::line(imgTmp, it->v[0], it->v[1], 255, 1, cv::LINE_AA);
@@ -176,3 +178,5 @@ void ImgWarp_PieceWiseAffine::calcDelta() {
         }
     }
 }
+
+}  // namespace mp_imgwarp

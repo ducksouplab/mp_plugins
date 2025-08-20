@@ -4,6 +4,8 @@
 #include <cmath>
 #include <limits>
 
+namespace mp_imgwarp {
+
 using cv::Vec3b;
 using cv::Vec4b;
 
@@ -191,3 +193,5 @@ Mat ImgWarp_MLS::genNewImg(const Mat &oriImg, double transRatio) {
         }
     return newImg;
 }
+
+}  // namespace mp_imgwarp

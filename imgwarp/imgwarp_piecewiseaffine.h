@@ -3,9 +3,9 @@
 
 #include "imgwarp_mls.h"
 
-class ImgWarp_PieceWiseAffine :
-	public ImgWarp_MLS
-{
+namespace mp_imgwarp {
+
+class ImgWarp_PieceWiseAffine : public ImgWarp_MLS {
 public:
     //! How to deal with the background.
     /*!
@@ -14,12 +14,13 @@ public:
         BGPieceWise: Use the same scheme for the background.
     */
     enum BGFill {
-			BGNone, //! No background is reserved.
-            BGMLS,  //! Use MLS to deal with the background.
-			BGPieceWise}; //! Use the same scheme for the background.
-    
-	ImgWarp_PieceWiseAffine(void);
-	~ImgWarp_PieceWiseAffine(void);
+        BGNone,      //! No background is reserved.
+        BGMLS,       //! Use MLS to deal with the background.
+        BGPieceWise  //! Use the same scheme for the background.
+    };
+
+    ImgWarp_PieceWiseAffine();
+    ~ImgWarp_PieceWiseAffine();
 
     void calcDelta();
     BGFill backGroundFillAlg;
@@ -27,4 +28,6 @@ private:
     Point_<double> getMLSDelta(int x, int y);
 };
 
-#endif //IMGTRANSPIECEWISEAFFINE_H
+}  // namespace mp_imgwarp
+
+#endif // IMGTRANSPIECEWISEAFFINE_H
