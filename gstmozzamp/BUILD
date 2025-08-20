@@ -19,6 +19,7 @@ cc_library(
     copts = [
         "-fPIC",
         "-I/usr/include/opencv4",
+        "-fvisibility=hidden",
     ],
     # Do NOT put linkopts here; keep them only on the final binary.
     alwayslink = True,   # <---- important
@@ -62,6 +63,7 @@ cc_binary(
     linkopts = [
         "-Wl,-z,defs",           # <---- fail at link time if anything is undefined
         "-Wl,--no-as-needed",    # <---- prevents ld from dropping needed libs
+        "-Wl,--exclude-libs,ALL",
         "-ldl",
         "-lopencv_core",
         "-lopencv_imgproc",
