@@ -64,7 +64,7 @@ sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_
 
 This is working:
 
-video/x-raw,format=RGBA ! identity single-segment=true ! mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_mp.dfm alpha=8 overlay=true show-landmarks=true force-rgb=true ignore-timestamps=false log-every=30
+mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_mp.dfm alpha=2 ignore-timestamps=false
 
 # Quick runs
 
