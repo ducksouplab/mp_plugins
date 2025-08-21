@@ -15,6 +15,7 @@ not yet functional and requires more work. We currently recommend keeping
 
 ### mozza_mp
 
+#### Parameters
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `model` | string | required | Path to `face_landmarker.task`. |
@@ -38,6 +39,33 @@ not yet functional and requires more work. We currently recommend keeping
 Recommended invocation:
 
 `mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu ignore-timestamps=false`
+
+#### DFM file format
+Each non-comment line defines one control rule:
+group, index,  t0, t1, t2,  a, b, c
+
+	- group – Integer group id. Rows with the same id form one group (used by warp-mode).
+	- index – Landmark to move.
+	- t0,t1,t2 – Anchor landmark indices used to build a barycentric target point T = a·L[t0] + b·L[t1] + c·L[t2].
+Weights need not sum to 1; negative weights are allowed (extrapolation), subject to your use.
+	- a,b,c – Barycentric weights.
+
+
+  For each rule, the destination of index is:
+  ```dst = cur + alpha * (T - cur)````
+
+where cur is the current landmark position and alpha is the element’s global intensity.
+
+#### Global vs local mode
+Groups & warp behavior
+	•	In global mode, all groups are merged into one control set and warped once over the full frame.
+	•	In per-group-roi mode, each group is warped independently inside a tight crop (union of src/dst bounding boxes, expanded by roi-pad). This confines influence to the region and prevents far-field “banding”.
+
+#### Tips
+	•	Prefer local anchors (nearby landmarks) to keep directions stable across faces.
+	•	If moving exactly one point in a group, add 1–3 identity pins (e.g., p,p,p, 1,0,0) around it so MLS has ≥2 control points.
+	•	If a rule references an out-of-range landmark index, that row is skipped (recommended behavior); enable strict-dfm during development to catch mistakes early.
+
 
 ### facelandmarks
 
