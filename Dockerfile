@@ -78,7 +78,7 @@ cc_library(
 EOF
 BASH
 
-# 4) Bazel config (CPU-only + make TF repo rules happy)
+# 4) Bazel config (CPU and GPU + make TF repo rules happy)
 RUN printf '%s\n' \
   'common --experimental_repo_remote_exec' \
   'common --repo_env=HERMETIC_PYTHON_VERSION=3.11' \
