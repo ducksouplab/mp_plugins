@@ -1,11 +1,50 @@
 # facelandmarks (GStreamer + MediaPipe in Docker)
 
-Two lean GStreamer video filters (`facelandmarks` and `mozzamp`) which run **MediaPipe Face Landmarker (C++ Tasks)** on CPU (GPU option is not working at the moment) and overlays the landmarks on RGBA frames. No OpenCV dependency. Set `delegate=gpu` to enable the MediaPipe GPU delegate when available.
+Two lean GStreamer video filters (`facelandmarks` and `mozza_mp`) which run **MediaPipe Face Landmarker (C++ Tasks)** on CPU and overlay the landmarks on RGBA frames. The project is still under active development: the GPU delegate path (`delegate=gpu`) is not functional yet and requires further work. Depends on OpenCV (see build files for details). Set `delegate=gpu` to enable the MediaPipe GPU delegate when available once implemented. We currently recommend running with `ignore-timestamps=false`.
 
 - Base image: `ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10`
 - GStreamer plugin base class: **GstVideoFilter** (`transform_frame_ip`).  
   See GStreamer docs for GstVideoFilter and plugin discovery. [refs]  
 - MediaPipe Face Landmarker uses a `.task` model and `VIDEO` mode (ms timestamps). [refs]
+
+## Plugin parameters
+
+Each plugin has its own set of parameters. The GPU delegate (`delegate=gpu`) is
+not yet functional and requires more work. We currently recommend keeping
+`ignore-timestamps=false` for typical scenarios.
+
+### mozza_mp
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model` | string | required | Path to `face_landmarker.task`. |
+| `deform` | string | none | Path to deformation `.dfm` file. |
+| `dfm` | string | none | Alias for `deform`. |
+| `alpha` | float [-10..10] | 1.0 | Smile intensity multiplier (negative values frown). |
+| `overlay` | boolean | false | Draw source/destination control points and vectors. |
+| `drop` | boolean | false | Drop frame when no face is detected. |
+| `show-landmarks` | boolean | false | Draw all detected landmarks even without a DFM. |
+| `strict-dfm` | boolean | false | Fail to start if a deform file is given but cannot be loaded. |
+| `force-rgb` | boolean | false | No-op; pads already require RGBA. |
+| `ignore-timestamps` | boolean | false | Pass `0` as timestamp to the detector; recommended to keep `false`. |
+| `log-every` | uint | 60 | Emit a log message every N frames (0 disables). |
+| `user-id` | string | none | Accepted but ignored; useful for uniform configs. |
+| `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`, `xnnpack`). `delegate=gpu` is not working and needs further development. |
+
+Recommended invocation:
+
+`mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu ignore-timestamps=false`
+
+### facelandmarks
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model` | string | required | Path to `face_landmarker.task`. |
+| `max-faces` | int | 1 | Maximum number of faces to detect. |
+| `draw` | boolean | true | Overlay landmarks on the frame. |
+| `radius` | int | 2 | Radius of landmark dots in pixels. |
+| `color` | uint | 0x00FF00FF | Packed RGBA color for landmarks. |
+| `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`, `xnnpack`). `delegate=gpu` is not working and needs further development. |
 
 ## Build
 
@@ -63,9 +102,9 @@ issues.
 
 ## Use it in DuckSoup mirror mode
 
-This is working:
+Example:
 
-mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_mp.dfm alpha=2 ignore-timestamps=false
+mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu ignore-timestamps=false
 
 # Quick runs
 
