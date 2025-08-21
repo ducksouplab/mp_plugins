@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -141,6 +142,8 @@ static int rt_face_create(const MpFaceLandmarkerOptions *opts,
   absl::StatusOr<std::unique_ptr<mp_face::FaceLandmarker>> lm =
       mp_face::FaceLandmarker::Create(std::move(options));
   if (!lm.ok()) {
+    std::string err = lm.status().ToString();
+    fprintf(stderr, "FaceLandmarker::Create failed: %s\n", err.c_str());
     return -2;
   }
 
