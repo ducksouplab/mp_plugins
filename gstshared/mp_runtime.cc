@@ -115,6 +115,13 @@ static int rt_face_create(const MpFaceLandmarkerOptions *opts,
   auto options = std::make_unique<mp_face::FaceLandmarkerOptions>();
   options->base_options = mp_core::BaseOptions();
   options->base_options.model_asset_path = std::string(opts->model_path);
+  // Choose execution delegate (CPU/XNNPACK or GPU).
+  options->base_options.delegate = mp_core::Delegate::CPU;
+  if (opts->delegate) {
+    if (std::strcmp(opts->delegate, "gpu") == 0) {
+      options->base_options.delegate = mp_core::Delegate::GPU;
+    }
+  }
   options->running_mode =
       mp_vision::core::RunningMode::LIVE_STREAM; // expects timestamps in ms
   options->result_callback =

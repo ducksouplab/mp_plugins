@@ -65,7 +65,7 @@ typedef struct MpFaceLandmarkerOptions {
   int32_t     with_blendshapes;
   int32_t     with_geometry;   // pose matrices, etc.
   int32_t     num_threads;     // hint; may be ignored by backend
-  const char* delegate;        // e.g. "xnnpack", "cpu" (informational)
+  const char* delegate;        // e.g. "gpu", "cpu" (informational)
 } MpFaceLandmarkerOptions;
 
 // ---------- Flat C API ----------
