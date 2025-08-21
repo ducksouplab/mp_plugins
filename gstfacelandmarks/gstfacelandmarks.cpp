@@ -32,6 +32,7 @@ struct _GstFaceLandmarks {
   gboolean draw;
   gint     radius;
   guint    color_rgba; // 0xRRGGBBAA
+  gchar*   delegate;   // execution delegate (cpu/gpu)
 
   MpFaceCtx* mp_ctx;   // opaque runtime context
 };
@@ -44,13 +45,16 @@ enum {
   PROP_MAX_FACES,
   PROP_DRAW,
   PROP_RADIUS,
-  PROP_COLOR
+  PROP_COLOR,
+  PROP_DELEGATE
 };
 
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
-  "sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw, format=RGBA"));
+  "sink", GST_PAD_SINK, GST_PAD_ALWAYS,
+  GST_STATIC_CAPS("video/x-raw(memory:GLMemory), format=RGBA; video/x-raw, format=RGBA"));
 static GstStaticPadTemplate src_template  = GST_STATIC_PAD_TEMPLATE(
-  "src",  GST_PAD_SRC,  GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw, format=RGBA"));
+  "src",  GST_PAD_SRC,  GST_PAD_ALWAYS,
+  GST_STATIC_CAPS("video/x-raw(memory:GLMemory), format=RGBA; video/x-raw, format=RGBA"));
 
 G_DEFINE_TYPE(GstFaceLandmarks, gst_face_landmarks, GST_TYPE_VIDEO_FILTER)
 
@@ -116,6 +120,10 @@ static void gst_face_landmarks_set_property(GObject* obj, guint prop_id,
     case PROP_DRAW:      self->draw       = g_value_get_boolean(value);          break;
     case PROP_RADIUS:    self->radius     = std::max(1, g_value_get_int(value)); break;
     case PROP_COLOR:     self->color_rgba = g_value_get_uint(value);             break;
+    case PROP_DELEGATE:
+      g_free(self->delegate);
+      self->delegate = g_value_dup_string(value);
+      break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
   }
 }
@@ -129,6 +137,7 @@ static void gst_face_landmarks_get_property(GObject* obj, guint prop_id,
     case PROP_DRAW:       g_value_set_boolean(value, self->draw);         break;
     case PROP_RADIUS:     g_value_set_int    (value, self->radius);       break;
     case PROP_COLOR:      g_value_set_uint   (value, self->color_rgba);   break;
+    case PROP_DELEGATE:   g_value_set_string (value, self->delegate);     break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
   }
 }
@@ -153,7 +162,7 @@ static gboolean gst_face_landmarks_start(GstBaseTransform* base) {
   opts.with_blendshapes= 0;
   opts.with_geometry   = 0;
   opts.num_threads     = 0;          // runtime default
-  opts.delegate        = nullptr;    // default ("xnnpack")
+  opts.delegate        = self->delegate;    // e.g. "cpu" or "gpu"
 
   if (MpApi().face_create(&opts, &self->mp_ctx) != 0 || !self->mp_ctx) {
     GST_ERROR_OBJECT(self, "face_create() failed");
@@ -215,6 +224,7 @@ static void gst_face_landmarks_class_init(GstFaceLandmarksClass* klass) {
 
   gobject_class->set_property = gst_face_landmarks_set_property;
   gobject_class->get_property = gst_face_landmarks_get_property;
+  gobject_class->finalize     = gst_face_landmarks_finalize;
 
   g_object_class_install_property(
       gobject_class, PROP_MODEL_PATH,
@@ -241,6 +251,11 @@ static void gst_face_landmarks_class_init(GstFaceLandmarksClass* klass) {
       g_param_spec_uint("color", "RGBA color 0xRRGGBBAA",
                         "Packed RGBA color for landmarks",
                         0, G_MAXUINT, 0x00FF00FFu, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_DELEGATE,
+      g_param_spec_string("delegate", "Execution delegate",
+                          "Runtime execution delegate (cpu, gpu, xnnpack)",
+                          "cpu", G_PARAM_READWRITE));
 
   gst_element_class_set_static_metadata(GST_ELEMENT_CLASS(klass),
       "Face Landmarks (mp_runtime)", "Filter/Effect/Video",
@@ -265,7 +280,15 @@ static void gst_face_landmarks_init(GstFaceLandmarks* self) {
   self->draw       = TRUE;
   self->radius     = 2;
   self->color_rgba = 0x00FF00FFu;
+  self->delegate   = g_strdup("cpu");
   self->mp_ctx     = nullptr;
+}
+
+static void gst_face_landmarks_finalize(GObject* object) {
+  auto* self = GST_FACE_LANDMARKS(object);
+  g_clear_pointer(&self->model_path, g_free);
+  g_clear_pointer(&self->delegate,   g_free);
+  G_OBJECT_CLASS(gst_face_landmarks_parent_class)->finalize(object);
 }
 
 static gboolean plugin_init(GstPlugin* plugin) {

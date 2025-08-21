@@ -1,6 +1,6 @@
 # facelandmarks (GStreamer + MediaPipe in Docker)
 
-A lean GStreamer video filter (`facelandmarks`) that runs **MediaPipe Face Landmarker (C++ Tasks)** on CPU and overlays the landmarks on RGBA frames. No OpenCV dependency.
+A lean GStreamer video filter (`facelandmarks`) that runs **MediaPipe Face Landmarker (C++ Tasks)** on CPU or GPU and overlays the landmarks on RGBA frames. No OpenCV dependency. Set `delegate=gpu` to enable the MediaPipe GPU delegate when available.
 
 - Base image: `ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10`
 - GStreamer plugin base class: **GstVideoFilter** (`transform_frame_ip`).  
@@ -26,7 +26,7 @@ This will:
 docker run --rm -it mozzamp:latest \
   bash -lc 'gst-inspect-1.0 mozzamp'
 ```
-You should see properties: model, max-faces, draw, radius, color.
+You should see properties: model, max-faces, draw, radius, color, delegate.
 
 ## ImgWarp debug logs
 
@@ -96,7 +96,9 @@ docker run --rm -it -v "$PWD:/work" mozzamp:latest bash -lc '
 
 
 # Element usage
-The plugin expects RGBA input; negotiate with videoconvert if needed:
+The plugin expects RGBA input; negotiate with videoconvert if needed. It can also
+negotiate GPU buffers via `video/x-raw(memory:GLMemory)` and will fall back to CPU
+copies when such memory types are unsupported:
 
 ````
 gst-launch-1.0 -v \

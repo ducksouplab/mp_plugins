@@ -70,6 +70,7 @@ struct _GstMozzaMp {
   gboolean ignore_ts;
   guint    log_every;
   gchar*   user_id;         // accepted but not used
+  gchar*   delegate;        // execution delegate (cpu/gpu)
 
   // runtime + helpers
   MpFaceCtx* mp_ctx;
@@ -97,12 +98,15 @@ enum {
   PROP_FORCE_RGB,        // NEW
   PROP_IGNORE_TS,        // NEW
   PROP_LOG_EVERY,        // NEW
+  PROP_DELEGATE,
 };
 
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
-  "sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw, format=RGBA"));
+  "sink", GST_PAD_SINK, GST_PAD_ALWAYS,
+  GST_STATIC_CAPS("video/x-raw(memory:GLMemory), format=RGBA; video/x-raw, format=RGBA"));
 static GstStaticPadTemplate src_template  = GST_STATIC_PAD_TEMPLATE(
-  "src",  GST_PAD_SRC,  GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw, format=RGBA"));
+  "src",  GST_PAD_SRC,  GST_PAD_ALWAYS,
+  GST_STATIC_CAPS("video/x-raw(memory:GLMemory), format=RGBA; video/x-raw, format=RGBA"));
 
 G_DEFINE_TYPE(GstMozzaMp, gst_mozza_mp, GST_TYPE_VIDEO_FILTER)
 
@@ -230,6 +234,11 @@ static void gst_mozza_mp_set_property(GObject* obj, guint prop_id,
       self->log_every = g_value_get_uint(value);
       GST_INFO_OBJECT(self, "prop:log-every = %u", self->log_every);
       break;
+    case PROP_DELEGATE:
+      g_free(self->delegate);
+      self->delegate = g_value_dup_string(value);
+      GST_INFO_OBJECT(self, "prop:delegate = %s", self->delegate ? self->delegate : "(null)");
+      break;
     case PROP_USER_ID:
       g_free(self->user_id);
       self->user_id = g_value_dup_string(value);
@@ -254,6 +263,7 @@ static void gst_mozza_mp_get_property(GObject* obj, guint prop_id,
     case PROP_FORCE_RGB:       g_value_set_boolean(value, self->force_rgb);      break;
     case PROP_IGNORE_TS:       g_value_set_boolean(value, self->ignore_ts);      break;
     case PROP_LOG_EVERY:       g_value_set_uint   (value, self->log_every);      break;
+    case PROP_DELEGATE:        g_value_set_string (value, self->delegate);       break;
     case PROP_USER_ID:         g_value_set_string (value, self->user_id);     break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
   }
@@ -280,7 +290,7 @@ static gboolean gst_mozza_mp_start(GstBaseTransform* base) {
   opts.with_blendshapes = 0;
   opts.with_geometry    = 0;
   opts.num_threads      = 0;
-  opts.delegate         = "xnnpack";
+  opts.delegate         = self->delegate;  // e.g. "cpu" or "gpu"
 
   self->mp_ctx = nullptr;
   auto t0 = std::chrono::steady_clock::now();
@@ -345,6 +355,7 @@ static void gst_mozza_mp_finalize(GObject* object) {
   g_clear_pointer(&self->model_path,  g_free);
   g_clear_pointer(&self->deform_path, g_free);
   g_clear_pointer(&self->user_id,     g_free);
+  g_clear_pointer(&self->delegate,    g_free);
   G_OBJECT_CLASS(gst_mozza_mp_parent_class)->finalize(object);
 }
 
@@ -728,6 +739,12 @@ static void gst_mozza_mp_class_init(GstMozzaMpClass* klass) {
                         "Log every N frames (0 disables periodic logs)",
                         0, 1000000, 60, G_PARAM_READWRITE));
 
+  g_object_class_install_property(
+      gobject_class, PROP_DELEGATE,
+      g_param_spec_string("delegate", "Execution delegate",
+                          "Runtime execution delegate (cpu, gpu, xnnpack)",
+                          "cpu", G_PARAM_READWRITE));
+
   // Accept but ignore: user-id (for Ducksoup uniform configs)
   g_object_class_install_property(
       gobject_class, PROP_USER_ID,
@@ -764,6 +781,7 @@ static void gst_mozza_mp_init(GstMozzaMp* self) {
   self->ignore_ts      = FALSE;
   self->log_every      = 60;
   self->user_id        = nullptr;
+  self->delegate       = g_strdup("cpu");
   self->frame_count    = 0;
   self->mp_ctx         = nullptr;
 }
