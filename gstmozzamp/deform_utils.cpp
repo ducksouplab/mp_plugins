@@ -6,6 +6,8 @@
 
 // --- dfm → control groups --------------------------------------------------
 
+static inline bool valid_idx(int i, int n) { return i >= 0 && i < n; }
+
 void build_groups_from_dfm(const Deformations& dfm,
                            const std::vector<cv::Point2f>& L, float alpha,
                            std::vector<std::vector<cv::Point2f>>& srcGroups,
@@ -13,24 +15,30 @@ void build_groups_from_dfm(const Deformations& dfm,
 {
   int gmax = -1; for (auto& e : dfm.entries) gmax = std::max(gmax, e.group);
   srcGroups.assign(gmax + 1, {}); dstGroups.assign(gmax + 1, {});
-  auto safe = [&](int i)->cv::Point2f {
-    if (i < 0 || i >= (int)L.size()) return cv::Point2f(0,0);
-    return L[i];
-  };
+
+  const int N = (int)L.size();
 
   for (auto& e : dfm.entries) {
-    if (e.idx < 0 || e.idx >= (int)L.size()) continue;
-    const cv::Point2f cur = safe(e.idx);
-    const cv::Point2f T   = e.a * safe(e.t0) + e.b * safe(e.t1) + e.c * safe(e.t2);
+    // must have a valid control point AND all three anchors
+    if (!valid_idx(e.idx, N) ||
+        !valid_idx(e.t0, N) || !valid_idx(e.t1, N) || !valid_idx(e.t2, N)) {
+      // optional: log once per frame or behind a flag
+      // GST_WARNING_OBJECT(self, "DFM: skipping row (idx=%d,t0=%d,t1=%d,t2=%d) for N=%d",
+      //                    e.idx, e.t0, e.t1, e.t2, N);
+      continue;
+    }
+
+    const cv::Point2f cur = L[e.idx];
+    const cv::Point2f T   = e.a * L[e.t0] + e.b * L[e.t1] + e.c * L[e.t2];
+
     const cv::Point2f dst = cur + alpha * (T - cur);
     srcGroups[e.group].push_back(cur);
     dstGroups[e.group].push_back(dst);
   }
 
-  // compact (remove empty groups)
+  // compact groups
   std::vector<std::vector<cv::Point2f>> s2, d2;
-  for (size_t i = 0; i < srcGroups.size(); ++i)
-    if (!srcGroups[i].empty()) { s2.push_back(std::move(srcGroups[i])); d2.push_back(std::move(dstGroups[i])); }
+  for (auto& g : srcGroups) if (!g.empty()) s2.emplace_back(std::move(g));
+  for (auto& g : dstGroups) if (!g.empty()) d2.emplace_back(std::move(g));
   srcGroups.swap(s2); dstGroups.swap(d2);
 }
-
