@@ -1,6 +1,6 @@
 # facelandmarks (GStreamer + MediaPipe in Docker)
 
-A lean GStreamer video filter (`facelandmarks`) that runs **MediaPipe Face Landmarker (C++ Tasks)** on CPU or GPU and overlays the landmarks on RGBA frames. No OpenCV dependency. Set `delegate=gpu` to enable the MediaPipe GPU delegate when available.
+Two lean GStreamer video filters (`facelandmarks` and `mozzamp`) which run **MediaPipe Face Landmarker (C++ Tasks)** on CPU (GPU option is not working at the moment) and overlays the landmarks on RGBA frames. No OpenCV dependency. Set `delegate=gpu` to enable the MediaPipe GPU delegate when available.
 
 - Base image: `ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10`
 - GStreamer plugin base class: **GstVideoFilter** (`transform_frame_ip`).  
@@ -28,19 +28,6 @@ docker run --rm -it mozzamp:latest \
 ```
 You should see properties: model, max-faces, draw, radius, color, delegate.
 
-## ImgWarp debug logs
-
-The underlying ImgWarp library can emit verbose diagnostics. These logs are
-disabled by default. To enable them, set the `IMGWARP_DEBUG` environment
-variable to a non-zero value before running any GStreamer command, for example:
-
-```bash
-IMGWARP_DEBUG=1 gst-launch-1.0 ...
-```
-
-The messages are written to standard error and can help troubleshoot warping
-issues.
-
 ## Get the .task model
 ```
 chmod +x download_face_landmarker_model.sh
@@ -60,6 +47,20 @@ chmod +x get_so_file.sh
 sudo cp -r mp-out /home/deploy/deploy-ducksoup/app/plugins/mp_plugins
 sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_landmarker.task
 ```
+
+## ImgWarp debug logs
+
+The underlying ImgWarp library can emit verbose diagnostics. These logs are
+disabled by default. To enable them, set the `IMGWARP_DEBUG` environment
+variable to a non-zero value before running any GStreamer command, for example:
+
+```bash
+IMGWARP_DEBUG=1 gst-launch-1.0 ...
+```
+
+The messages are written to standard error and can help troubleshoot warping
+issues.
+
 ## Use it in DuckSoup mirror mode
 
 This is working:
@@ -93,7 +94,6 @@ docker run --rm -it -v "$PWD:/work" mozzamp:latest bash -lc '
     mozzamp model=/opt/models/face_landmarker.task max-faces=1 ! \
     videoconvert ! x264enc ! mp4mux ! filesink location=/work/output_landmarked.mp4
 '
-
 
 # Element usage
 The plugin expects RGBA input; negotiate with videoconvert if needed. It can also
