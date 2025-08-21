@@ -9,6 +9,8 @@
 //   alpha              : float, [-10..10], default 1.0
 //   mls-alpha          : float, default 1.4 (MLS rigidity parameter)
 //   mls-grid           : int, default 5 (MLS grid size in pixels; smaller=denser)
+//   warp-mode          : string, default "global" ("global" or "per-group-roi")
+//   roi-pad            : int, default 24 (padding around per-group ROI in pixels)
 //   overlay            : bool, default false (draw src/dst control points + vectors)
 //   drop               : bool, default false (drop frame when no face)
 //   show-landmarks     : bool, default false (draw all landmarks even without DFM)
@@ -76,6 +78,9 @@ struct _GstMozzaMp {
   gchar*   user_id;         // accepted but not used
   gchar*   delegate;        // execution delegate (cpu/gpu)
 
+  gint     warp_mode;       // WarpMode enum
+  gint     roi_pad;         // padding for per-group ROI warps
+
   // runtime + helpers
   MpFaceCtx* mp_ctx;
   std::optional<Deformations> dfm;
@@ -86,6 +91,11 @@ struct _GstMozzaMp {
 };
 
 G_END_DECLS
+
+enum WarpMode {
+  WARP_GLOBAL = 0,
+  WARP_PER_GROUP_ROI = 1,
+};
 
 // ── Properties ────────────────────────────────────────────────────────────────
 enum {
@@ -105,6 +115,8 @@ enum {
   PROP_DELEGATE,
   PROP_MLS_ALPHA,
   PROP_MLS_GRID,
+  PROP_WARP_MODE,
+  PROP_ROI_PAD,
 };
 
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
@@ -220,6 +232,20 @@ static void gst_mozza_mp_set_property(GObject* obj, guint prop_id,
       if (self->mls) self->mls->gridSize = self->mls_grid;
       GST_INFO_OBJECT(self, "prop:mls-grid = %d", self->mls_grid);
       break;
+    case PROP_WARP_MODE: {
+      const char* s = g_value_get_string(value);
+      if (s && g_ascii_strcasecmp(s, "per-group-roi") == 0)
+        self->warp_mode = WARP_PER_GROUP_ROI;
+      else
+        self->warp_mode = WARP_GLOBAL;
+      GST_INFO_OBJECT(self, "prop:warp-mode = %s",
+                      self->warp_mode == WARP_PER_GROUP_ROI ? "per-group-roi" : "global");
+      break;
+    }
+    case PROP_ROI_PAD:
+      self->roi_pad = g_value_get_int(value);
+      GST_INFO_OBJECT(self, "prop:roi-pad = %d", self->roi_pad);
+      break;
     case PROP_OVERLAY:
       self->overlay = g_value_get_boolean(value);
       GST_INFO_OBJECT(self, "prop:overlay = %s", self->overlay ? "true" : "false");
@@ -274,6 +300,11 @@ static void gst_mozza_mp_get_property(GObject* obj, guint prop_id,
     case PROP_ALPHA:           g_value_set_float  (value, self->alpha);       break;
     case PROP_MLS_ALPHA:       g_value_set_float  (value, self->mls_alpha);   break;
     case PROP_MLS_GRID:        g_value_set_int    (value, self->mls_grid);    break;
+    case PROP_WARP_MODE:
+      g_value_set_string(value,
+        self->warp_mode == WARP_PER_GROUP_ROI ? "per-group-roi" : "global");
+      break;
+    case PROP_ROI_PAD:         g_value_set_int    (value, self->roi_pad);    break;
     case PROP_OVERLAY:         g_value_set_boolean(value, self->overlay);     break;
     case PROP_DROP:            g_value_set_boolean(value, self->drop);        break;
     case PROP_SHOW_LANDMARKS:  g_value_set_boolean(value, self->show_landmarks); break;
@@ -600,67 +631,78 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
 
       const auto t0w = std::chrono::steady_clock::now();
 
-      // Combine all control points into a single warp to avoid repeatedly
-      // warping the entire image for each group.  ImgWarp_MLS_Rigid now
-      // supports 4-channel RGBA, so we operate directly on the original
-      // buffer.
-      std::vector<cv::Point2f> src;
-      std::vector<cv::Point2f> dst;
-      src.reserve(ctrl_pts + 4);
-      dst.reserve(ctrl_pts + 4);
-      for (size_t g = 0; g < srcGroups.size(); ++g) {
-        src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
-        dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
-      }
-      add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
-
-      uint64_t hash_before = 0;
-      if (log_now) {
-        hash_before = fnv1a64(img_rgba.data,
-                              (size_t)img_rgba.step[0] * img_rgba.rows);
-      }
-
-      cv::Mat warped;
-      if (DBG_AFFINE) {
-        cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
-        cv::warpAffine(img_rgba, warped, M, img_rgba.size(),
-                       cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+      if (self->warp_mode == WARP_PER_GROUP_ROI) {
+        for (size_t g = 0; g < srcGroups.size(); ++g) {
+          compute_MLS_on_ROI(img_rgba, *self->mls, srcGroups[g], dstGroups[g], self->roi_pad);
+        }
+        const auto t1w = std::chrono::steady_clock::now();
+        if (log_now) {
+          const auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
+          GST_INFO_OBJECT(self, "MLS per-group ROI warp %lld ms", (long long)msw);
+        }
       } else {
-        warped = self->mls->setAllAndGenerate(
-            img_rgba, src, dst, img_rgba.cols, img_rgba.rows);
-      }
+        // Combine all control points into a single warp to avoid repeatedly
+        // warping the entire image for each group.  ImgWarp_MLS_Rigid now
+        // supports 4-channel RGBA, so we operate directly on the original
+        // buffer.
+        std::vector<cv::Point2f> src;
+        std::vector<cv::Point2f> dst;
+        src.reserve(ctrl_pts + 4);
+        dst.reserve(ctrl_pts + 4);
+        for (size_t g = 0; g < srcGroups.size(); ++g) {
+          src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
+          dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
+        }
+        add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, /*inset=*/2);
 
-      double mean_delta = 0.0;
-      const bool need_mean_delta = DBG_INVERT_IF_ZERO || log_now;
-      if (need_mean_delta && !warped.empty()) {
-        mean_delta = mean_abs_rgb_diff(img_rgba, warped);
-      }
-      if (!warped.empty()) {
-        warped.copyTo(img_rgba);
-      }
+        uint64_t hash_before = 0;
+        if (log_now) {
+          hash_before = fnv1a64(img_rgba.data,
+                                (size_t)img_rgba.step[0] * img_rgba.rows);
+        }
 
-      uint64_t hash_after = 0;
-      if (log_now) {
-        hash_after = fnv1a64(img_rgba.data,
-                             (size_t)img_rgba.step[0] * img_rgba.rows);
-      }
+        cv::Mat warped;
+        if (DBG_AFFINE) {
+          cv::Mat M = (cv::Mat_<double>(2,3) << 1, 0, 10, 0, 1, 6);
+          cv::warpAffine(img_rgba, warped, M, img_rgba.size(),
+                         cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+        } else {
+          warped = self->mls->setAllAndGenerate(
+              img_rgba, src, dst, img_rgba.cols, img_rgba.rows);
+        }
 
-      if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
-        cv::bitwise_not(img_rgba, img_rgba);
-      }
+        double mean_delta = 0.0;
+        const bool need_mean_delta = DBG_INVERT_IF_ZERO || log_now;
+        if (need_mean_delta && !warped.empty()) {
+          mean_delta = mean_abs_rgb_diff(img_rgba, warped);
+        }
+        if (!warped.empty()) {
+          warped.copyTo(img_rgba);
+        }
 
-      if (log_now) {
-        GST_INFO_OBJECT(self,
-          "MLS combined: groups=%zu ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
-          srcGroups.size(), (size_t)src.size(),
-          (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
-          (hash_before == hash_after ? "  (no byte change!)" : ""));
-      }
+        uint64_t hash_after = 0;
+        if (log_now) {
+          hash_after = fnv1a64(img_rgba.data,
+                               (size_t)img_rgba.step[0] * img_rgba.rows);
+        }
 
-      const auto t1w = std::chrono::steady_clock::now();
-      if (log_now) {
-        const auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
-        GST_INFO_OBJECT(self, "MLS warp %lld ms", (long long)msw);
+        if (DBG_INVERT_IF_ZERO && mean_delta < 0.5) {
+          cv::bitwise_not(img_rgba, img_rgba);
+        }
+
+        if (log_now) {
+          GST_INFO_OBJECT(self,
+            "MLS combined: groups=%zu ctrl=%zu (+4 anchors) | hash %016llx -> %016llx | meanΔ=%.2f%s",
+            srcGroups.size(), (size_t)src.size(),
+            (unsigned long long)hash_before, (unsigned long long)hash_after, mean_delta,
+            (hash_before == hash_after ? "  (no byte change!)" : ""));
+        }
+
+        const auto t1w = std::chrono::steady_clock::now();
+        if (log_now) {
+          const auto msw = std::chrono::duration_cast<std::chrono::milliseconds>(t1w - t0w).count();
+          GST_INFO_OBJECT(self, "MLS warp %lld ms", (long long)msw);
+        }
       }
 
       // Draw displacement vectors (top)
@@ -790,6 +832,19 @@ static void gst_mozza_mp_class_init(GstMozzaMpClass* klass) {
                        1, 100, 5,
                        G_PARAM_READWRITE));
 
+  g_object_class_install_property(
+      gobject_class, PROP_WARP_MODE,
+      g_param_spec_string("warp-mode", "Warp mode",
+                          "MLS warping strategy: 'global' or 'per-group-roi'",
+                          "global", G_PARAM_READWRITE));
+
+  g_object_class_install_property(
+      gobject_class, PROP_ROI_PAD,
+      g_param_spec_int("roi-pad", "ROI padding",
+                       "Padding (pixels) around group ROI when warp-mode=per-group-roi",
+                       0, 200, 24,
+                       G_PARAM_READWRITE));
+
   // Accept but ignore: user-id (for Ducksoup uniform configs)
   g_object_class_install_property(
       gobject_class, PROP_USER_ID,
@@ -829,6 +884,8 @@ static void gst_mozza_mp_init(GstMozzaMp* self) {
   self->log_every      = 60;
   self->user_id        = nullptr;
   self->delegate       = g_strdup("cpu");
+  self->warp_mode      = WARP_GLOBAL;
+  self->roi_pad        = 24;
   self->frame_count    = 0;
   self->mp_ctx         = nullptr;
 }
