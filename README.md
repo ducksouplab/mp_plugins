@@ -21,6 +21,8 @@ not yet functional and requires more work. We currently recommend keeping
 | `deform` | string | none | Path to deformation `.dfm` file. |
 | `dfm` | string | none | Alias for `deform`. |
 | `alpha` | float [-10..10] | 1.0 | Smile intensity multiplier (negative values frown). |
+| `mls-alpha` | float | 1.4 | Rigidity parameter for MLS warping. |
+| `mls-grid` | int | 5 | MLS grid size in pixels (smaller = denser). |
 | `overlay` | boolean | false | Draw source/destination control points and vectors. |
 | `drop` | boolean | false | Drop frame when no face is detected. |
 | `show-landmarks` | boolean | false | Draw all detected landmarks even without a DFM. |
