@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git pkg-config build-essential \
     python3 python3-numpy libglib2.0-dev \
     libopencv-dev \
+    libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Bazel
@@ -81,7 +82,6 @@ BASH
 RUN printf '%s\n' \
   'common --experimental_repo_remote_exec' \
   'common --repo_env=HERMETIC_PYTHON_VERSION=3.11' \
-  'build --define MEDIAPIPE_DISABLE_GPU=1' \
   'build --define xnn_enable_avxvnni=false' \
   'build --define xnn_enable_avxvnniint8=false' \
   'build --cxxopt=-std=gnu++17 --host_cxxopt=-std=gnu++17' \

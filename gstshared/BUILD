@@ -1,4 +1,3 @@
-# gstshared/BUILD
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
 cc_library(
@@ -14,35 +13,46 @@ cc_library(
     hdrs = ["mp_runtime_loader.h"],
     deps = [":mp_runtime_hdrs"],
     includes = ["."],
-    copts = ["-fPIC", "-std=c++14"],
+    copts = ["-fPIC", "-std=c++17"],
     linkopts = ["-Wl,--no-as-needed", "-ldl"],
+    visibility = ["//visibility:public"],
+)
+
+# Keep only the GL inference calculators here; they bring required GL deps transitively.
+cc_library(
+    name = "mp_gpu_deps",
+    srcs = [],
+    deps = [
+        "//mediapipe/calculators/tensor:inference_calculator_gl",
+        "//mediapipe/calculators/tensor:inference_calculator_gl_advanced",
+    ],
+    alwayslink = 1,
     visibility = ["//visibility:public"],
 )
 
 cc_binary(
     name = "libmp_runtime.so",
     srcs = ["mp_runtime.cc"],
-    deps  = [
+    linkshared = 1,
+    deps = [
         ":mp_runtime_hdrs",
+        ":mp_gpu_deps",  # <-- use wrapper so registrations aren't GC’d
         "//mediapipe/tasks/cc/vision/face_landmarker:face_landmarker",
-        "//mediapipe/framework/formats:image",   # brings image_opencv.cc
+        "//mediapipe/framework/formats:image",
         "@com_google_absl//absl/status:statusor",
     ],
-    linkshared = 1,
     copts = [
         "-O2",
         "-fPIC",
         "-std=c++17",
-        # (Optional if you added it to .bazelrc, harmless to keep)
         "-I/usr/include/opencv4",
     ],
-    # Minimal OpenCV set needed by image_opencv.cc
     linkopts = [
         "-Wl,-z,defs",
         "-lopencv_core",
         "-lopencv_imgproc",
-        # Add more if your runtime starts using them:
-        # "-lopencv_imgcodecs", "-lopencv_video", "-lopencv_highgui",
+        "-lEGL",
+        "-lGLESv2",
     ],
     visibility = ["//visibility:public"],
 )
