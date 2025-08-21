@@ -58,6 +58,8 @@ static GstStaticPadTemplate src_template  = GST_STATIC_PAD_TEMPLATE(
 
 G_DEFINE_TYPE(GstFaceLandmarks, gst_face_landmarks, GST_TYPE_VIDEO_FILTER)
 
+static void gst_face_landmarks_finalize(GObject* object);
+
 // ── RGBA overlay helpers ─────────────────────────────────────────────────────
 static inline void put_px(uint8_t* p, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
   const uint8_t dr = p[0], dg = p[1], db = p[2], da = p[3];
