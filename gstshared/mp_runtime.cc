@@ -116,10 +116,12 @@ static int rt_face_create(const MpFaceLandmarkerOptions *opts,
   options->base_options = mp_core::BaseOptions();
   options->base_options.model_asset_path = std::string(opts->model_path);
   // Choose execution delegate (CPU/XNNPACK or GPU).
-  options->base_options.delegate = mp_core::Delegate::CPU;
+  // MediaPipe Tasks v0.10.26 moved the delegate enum inside BaseOptions.
+  using MpDelegate = mp_core::BaseOptions::Delegate;
+  options->base_options.delegate = MpDelegate::CPU;
   if (opts->delegate) {
     if (std::strcmp(opts->delegate, "gpu") == 0) {
-      options->base_options.delegate = mp_core::Delegate::GPU;
+      options->base_options.delegate = MpDelegate::GPU;
     }
   }
   options->running_mode =
