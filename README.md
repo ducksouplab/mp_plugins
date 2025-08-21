@@ -38,7 +38,19 @@ not yet functional and requires more work. We currently recommend keeping
 
 Recommended invocation:
 
-`mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu ignore-timestamps=false`
+`mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu ignore-timestamps=false warp-mode=per-group-roi`
+
+For smile in the server use:
+mozza_mp deform=/app/plugins/smile_mp.dfm alpha=2 model=/app/plugins/face_landmarker.task warp-mode=per-group-roi
+
+With smile_mp.dfm such as:
+```
+# Left corner (61): use two upper-lip/cheek points near-above it (146 and 91)
+0,61,   146,  91,  61,   -0.55, -0.55,  2.10
+
+# Right corner (291): mirrors (375 and 321)
+1,291,  375, 321, 291,   -0.55, -0.55,  2.10
+```
 
 #### DFM file format
 Each non-comment line defines one control rule:
