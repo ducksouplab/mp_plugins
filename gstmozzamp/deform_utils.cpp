@@ -42,3 +42,43 @@ void build_groups_from_dfm(const Deformations& dfm,
   for (auto& g : dstGroups) if (!g.empty()) d2.emplace_back(std::move(g));
   srcGroups.swap(s2); dstGroups.swap(d2);
 }
+
+// --- per-group ROI MLS -------------------------------------------------------
+
+static cv::Rect tight_bounds(const std::vector<cv::Point2f>& pts,
+                             int W, int H, int pad) {
+  if (pts.empty()) return cv::Rect();
+  float xmin =  1e9f, ymin =  1e9f;
+  float xmax = -1e9f, ymax = -1e9f;
+  for (auto& p : pts) {
+    xmin = std::min(xmin, p.x); ymin = std::min(ymin, p.y);
+    xmax = std::max(xmax, p.x); ymax = std::max(ymax, p.y);
+  }
+  int x = std::max(0, (int)std::floor(xmin) - pad);
+  int y = std::max(0, (int)std::floor(ymin) - pad);
+  int X = std::min(W - 1, (int)std::ceil(xmax) + pad);
+  int Y = std::min(H - 1, (int)std::ceil(ymax) + pad);
+  return cv::Rect(x, y, std::max(1, X - x + 1), std::max(1, Y - y + 1));
+}
+
+void compute_MLS_on_ROI(cv::Mat& imgRGBA, mp_imgwarp::ImgWarp_MLS_Rigid& mls,
+                        const std::vector<cv::Point2f>& src,
+                        const std::vector<cv::Point2f>& dst,
+                        int pad) {
+  if (src.empty()) return;
+  const cv::Rect roi = tight_bounds(src, imgRGBA.cols, imgRGBA.rows, pad);
+  if (roi.width <= 1 || roi.height <= 1) return;
+
+  cv::Mat patch = imgRGBA(roi).clone();
+
+  std::vector<cv::Point2f> sL, dL;
+  sL.reserve(src.size());
+  dL.reserve(dst.size());
+  for (size_t i = 0; i < src.size(); ++i) {
+    sL.emplace_back(src[i].x - roi.x, src[i].y - roi.y);
+    dL.emplace_back(dst[i].x - roi.x, dst[i].y - roi.y);
+  }
+
+  mls.setAllAndGenerate(patch, sL, dL, patch.cols, patch.rows);
+  patch.copyTo(imgRGBA(roi));
+}
