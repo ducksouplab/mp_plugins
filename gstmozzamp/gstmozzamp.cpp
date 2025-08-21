@@ -7,6 +7,8 @@
 //   deform             : path to deformation .dfm (string, optional)
 //   dfm                : alias of "deform" (string, optional; for legacy pipelines)
 //   alpha              : float, [-10..10], default 1.0
+//   mls-alpha          : float, default 1.4 (MLS rigidity parameter)
+//   mls-grid           : int, default 5 (MLS grid size in pixels; smaller=denser)
 //   overlay            : bool, default false (draw src/dst control points + vectors)
 //   drop               : bool, default false (drop frame when no face)
 //   show-landmarks     : bool, default false (draw all landmarks even without DFM)
@@ -62,6 +64,8 @@ struct _GstMozzaMp {
   gchar*   model_path;
   gchar*   deform_path;     // also set by "dfm"
   gfloat   alpha;
+  gfloat   mls_alpha;
+  gint     mls_grid;
   gboolean overlay;
   gboolean drop;
   gboolean show_landmarks;
@@ -99,6 +103,8 @@ enum {
   PROP_IGNORE_TS,        // NEW
   PROP_LOG_EVERY,        // NEW
   PROP_DELEGATE,
+  PROP_MLS_ALPHA,
+  PROP_MLS_GRID,
 };
 
 static GstStaticPadTemplate sink_template = GST_STATIC_PAD_TEMPLATE(
@@ -204,6 +210,16 @@ static void gst_mozza_mp_set_property(GObject* obj, guint prop_id,
       self->alpha = g_value_get_float(value);
       GST_INFO_OBJECT(self, "prop:alpha = %.3f", self->alpha);
       break;
+    case PROP_MLS_ALPHA:
+      self->mls_alpha = g_value_get_float(value);
+      if (self->mls) self->mls->alpha = self->mls_alpha;
+      GST_INFO_OBJECT(self, "prop:mls-alpha = %.3f", self->mls_alpha);
+      break;
+    case PROP_MLS_GRID:
+      self->mls_grid = g_value_get_int(value);
+      if (self->mls) self->mls->gridSize = self->mls_grid;
+      GST_INFO_OBJECT(self, "prop:mls-grid = %d", self->mls_grid);
+      break;
     case PROP_OVERLAY:
       self->overlay = g_value_get_boolean(value);
       GST_INFO_OBJECT(self, "prop:overlay = %s", self->overlay ? "true" : "false");
@@ -256,6 +272,8 @@ static void gst_mozza_mp_get_property(GObject* obj, guint prop_id,
     case PROP_DEFORM_PATH:     g_value_set_string (value, self->deform_path); break;
     case PROP_DFM_ALIAS:       g_value_set_string (value, self->deform_path); break; // alias
     case PROP_ALPHA:           g_value_set_float  (value, self->alpha);       break;
+    case PROP_MLS_ALPHA:       g_value_set_float  (value, self->mls_alpha);   break;
+    case PROP_MLS_GRID:        g_value_set_int    (value, self->mls_grid);    break;
     case PROP_OVERLAY:         g_value_set_boolean(value, self->overlay);     break;
     case PROP_DROP:            g_value_set_boolean(value, self->drop);        break;
     case PROP_SHOW_LANDMARKS:  g_value_set_boolean(value, self->show_landmarks); break;
@@ -319,9 +337,9 @@ static gboolean gst_mozza_mp_start(GstBaseTransform* base) {
                   (long long)ms, opts.delegate, opts.num_threads);
 
   self->mls = std::make_unique<mp_imgwarp::ImgWarp_MLS_Rigid>();
-  self->mls->gridSize = 5;
+  self->mls->gridSize = self->mls_grid;
   self->mls->preScale = true;
-  self->mls->alpha    = 1.4;
+  self->mls->alpha    = self->mls_alpha;
 
   if (self->deform_path) {
     errno = 0;
@@ -758,6 +776,20 @@ static void gst_mozza_mp_class_init(GstMozzaMpClass* klass) {
                           "Runtime execution delegate (cpu, gpu, xnnpack)",
                           "cpu", G_PARAM_READWRITE));
 
+  g_object_class_install_property(
+      gobject_class, PROP_MLS_ALPHA,
+      g_param_spec_float("mls-alpha", "MLS alpha",
+                         "Rigidity parameter for MLS warping",
+                         0.f, 10.f, 1.4f,
+                         G_PARAM_READWRITE));
+
+  g_object_class_install_property(
+      gobject_class, PROP_MLS_GRID,
+      g_param_spec_int("mls-grid", "MLS grid size",
+                       "Grid size in pixels (smaller = denser)",
+                       1, 100, 5,
+                       G_PARAM_READWRITE));
+
   // Accept but ignore: user-id (for Ducksoup uniform configs)
   g_object_class_install_property(
       gobject_class, PROP_USER_ID,
@@ -786,6 +818,8 @@ static void gst_mozza_mp_init(GstMozzaMp* self) {
   self->model_path     = nullptr;
   self->deform_path    = nullptr;
   self->alpha          = 1.0f;
+  self->mls_alpha      = 1.4f;
+  self->mls_grid       = 5;
   self->overlay        = FALSE;
   self->drop           = FALSE;
   self->show_landmarks = FALSE;
