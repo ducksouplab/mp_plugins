@@ -292,6 +292,12 @@ static gboolean gst_mozza_mp_start(GstBaseTransform* base) {
   opts.num_threads      = 0;
   opts.delegate         = self->delegate;  // e.g. "cpu" or "gpu"
 
+  GST_INFO_OBJECT(self,
+                  "creating mp_face_landmarker with model=%s delegate=%s threads=%d",
+                  opts.model_path ? opts.model_path : "(null)",
+                  opts.delegate ? opts.delegate : "(null)",
+                  opts.num_threads);
+
   self->mp_ctx = nullptr;
   auto t0 = std::chrono::steady_clock::now();
   int rc = MpApi().face_create(&opts, &self->mp_ctx);
@@ -299,7 +305,14 @@ static gboolean gst_mozza_mp_start(GstBaseTransform* base) {
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
   if (rc != 0 || !self->mp_ctx) {
-    GST_ERROR_OBJECT(self, "mp_face_landmarker_create failed (rc=%d) in %lld ms", rc, (long long)ms);
+    const char* loader_err = mp_runtime_loader::last_error();
+    GST_ERROR_OBJECT(self,
+                     "mp_face_landmarker_create failed (rc=%d) in %lld ms (delegate=%s, model=%s, last_error=%s)",
+                     rc,
+                     (long long)ms,
+                     opts.delegate ? opts.delegate : "(null)",
+                     opts.model_path ? opts.model_path : "(null)",
+                     loader_err ? loader_err : "(none)");
     return FALSE;
   }
   GST_INFO_OBJECT(self, "mp_face_landmarker created in %lld ms (delegate=%s, threads=%d)",
