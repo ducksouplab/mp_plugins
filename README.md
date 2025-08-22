@@ -1,21 +1,20 @@
-# facelandmarks (GStreamer + MediaPipe in Docker)
+# Mediapipe plugins in Gstremaer
 
-Two lean GStreamer video filters (`facelandmarks` and `mozza_mp`) which run **MediaPipe Face Landmarker (C++ Tasks)** on CPU and overlay the landmarks on RGBA frames. The project is still under active development: the GPU delegate path (`delegate=gpu`) is not functional yet and requires further work. Depends on OpenCV (see build files for details). Set `delegate=gpu` to enable the MediaPipe GPU delegate when available once implemented. We currently recommend running with `ignore-timestamps=false`.
-
+This repository contains two lean GStreamer video filters (`facelandmarks` and `mozza_mp`) which run **MediaPipe Face Landmarker (C++ Tasks)** on CPU and overlay the landmarks on RGBA frames. The project is still under active development: the GPU delegate path (`delegate=gpu`) is not functional yet and requires further work. Depends on OpenCV (see build files for details). Set `delegate=gpu` to enable the MediaPipe GPU delegate when available once implemented. We currently recommend running with `ignore-timestamps=false`.
 - Base image: `ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10`
 - GStreamer plugin base class: **GstVideoFilter** (`transform_frame_ip`).  
   See GStreamer docs for GstVideoFilter and plugin discovery. [refs]  
 - MediaPipe Face Landmarker uses a `.task` model and `VIDEO` mode (ms timestamps). [refs]
 
-## Plugin parameters
+Note:
 
 Each plugin has its own set of parameters. The GPU delegate (`delegate=gpu`) is
 not yet functional and requires more work. We currently recommend keeping
 `ignore-timestamps=false` for typical scenarios.
 
-### mozza_mp
+# Plugin : mozza_mp
 
-#### Parameters
+## Parameters
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `model` | string | required | Path to `face_landmarker.task`. |
@@ -54,7 +53,7 @@ With smile_mp.dfm such as:
 
 Tweak mls-alpha to modulate the effect—between 0.8 and 1.4 works well for a realistic smile.
 
-#### DFM file format
+## DFM file format
 Each non-comment line defines one control rule:
 group, index,  t0, t1, t2,  a, b, c
 
@@ -70,18 +69,18 @@ Weights need not sum to 1; negative weights are allowed (extrapolation), subject
 
 where cur is the current landmark position and alpha is the element’s global intensity.
 
-#### Global vs local mode
+## Global vs local mode
 Groups & warp behavior
 	•	In global mode, all groups are merged into one control set and warped once over the full frame.
 	•	In per-group-roi mode, each group is warped independently inside a tight crop (union of src/dst bounding boxes, expanded by roi-pad). This confines influence to the region and prevents far-field “banding”.
 
-#### Tips
+## Tips
 	•	Prefer local anchors (nearby landmarks) to keep directions stable across faces.
 	•	If moving exactly one point in a group, add 1–3 identity pins (e.g., p,p,p, 1,0,0) around it so MLS has ≥2 control points.
 	•	If a rule references an out-of-range landmark index, that row is skipped (recommended behavior); enable strict-dfm during development to catch mistakes early.
 
 
-### facelandmarks
+# Plugin : facelandmarks
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -92,8 +91,8 @@ Groups & warp behavior
 | `color` | uint | 0x00FF00FF | Packed RGBA color for landmarks. |
 | `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`, `xnnpack`). `delegate=gpu` is not working and needs further development. |
 
-## Build with Docker 
-### Build
+# Build the plugins with Docker 
+## Build
 ```bash
 docker build -t ducksouplab/mozzamp:latest .
 ```
@@ -106,7 +105,7 @@ This will:
 	5.	Build libgstfacelandmarks.so with CMake and install it to the system plugin path.
 	6.	Download face_landmarker.task into /opt/models.
 
-### Docker push or pull
+## Docker push or pull
 Push or pull docker image:
 
 Push — you need writes to ducksouplab to do this:
@@ -119,20 +118,20 @@ Pull :
 docker pull ducksouplab/mozzamp:latest
 ```
 
-### Verify plugin
+## Verify plugin
 ```
 docker run --rm -it mozzamp:latest \
   bash -lc 'gst-inspect-1.0 mozzamp'
 ```
 You should see properties: model, max-faces, draw, radius, color, delegate.
 
-### Get the .task model
+## Get the .task model
 ```
 chmod +x download_face_landmarker_model.sh
 ./download_face_landmarker_model.sh
 ```
 
-### Get the .so files
+## Get the .so files
 ```
 chmod +x get_so_file.sh
 ./get_so_file.sh mozzamp:latest out
@@ -146,7 +145,7 @@ sudo cp -r mp-out /home/deploy/deploy-ducksoup/app/plugins/mp_plugins
 sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_landmarker.task
 ```
 
-### ImgWarp debug logs
+## ImgWarp debug logs
 
 The underlying ImgWarp library can emit verbose diagnostics. These logs are
 disabled by default. To enable them, set the `IMGWARP_DEBUG` environment
@@ -159,7 +158,7 @@ IMGWARP_DEBUG=1 gst-launch-1.0 ...
 The messages are written to standard error and can help troubleshoot warping
 issues.
 
-### Use it in DuckSoup mirror mode
+## Use the plugins in DuckSoup in mirror mode
 
 Example:
 
