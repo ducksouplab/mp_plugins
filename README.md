@@ -92,10 +92,10 @@ Groups & warp behavior
 | `color` | uint | 0x00FF00FF | Packed RGBA color for landmarks. |
 | `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`, `xnnpack`). `delegate=gpu` is not working and needs further development. |
 
-## Build
-
+## Build with Docker 
+### Build
 ```bash
-docker build -t mozzamp:latest .
+docker build -t ducksouplab/mozzamp:latest .
 ```
 
 This will:
@@ -106,23 +106,36 @@ This will:
 	5.	Build libgstfacelandmarks.so with CMake and install it to the system plugin path.
 	6.	Download face_landmarker.task into /opt/models.
 
-# Verify plugin
+### Docker push or pull
+Push or pull docker image:
+
+Push — you need writes to ducksouplab to do this:
+```bash
+docker push ducksouplab/mozzamp:latest
+```
+
+Pull :
+```bash
+docker pull ducksouplab/mozzamp:latest
+```
+
+### Verify plugin
 ```
 docker run --rm -it mozzamp:latest \
   bash -lc 'gst-inspect-1.0 mozzamp'
 ```
 You should see properties: model, max-faces, draw, radius, color, delegate.
 
-## Get the .task model
+### Get the .task model
 ```
 chmod +x download_face_landmarker_model.sh
 ./download_face_landmarker_model.sh
 ```
 
-## Get the .so files
+### Get the .so files
 ```
 chmod +x get_so_file.sh
-./get_so_file.sh mozzamp:latest
+./get_so_file.sh mozzamp:latest out
 
 ## Careful with this line : remove old plugins from destination
 ##sudo rm -r /home/deploy/deploy-ducksoup/app/plugins/mp_plugins/
@@ -133,7 +146,7 @@ sudo cp -r mp-out /home/deploy/deploy-ducksoup/app/plugins/mp_plugins
 sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_landmarker.task
 ```
 
-## ImgWarp debug logs
+### ImgWarp debug logs
 
 The underlying ImgWarp library can emit verbose diagnostics. These logs are
 disabled by default. To enable them, set the `IMGWARP_DEBUG` environment
@@ -146,7 +159,7 @@ IMGWARP_DEBUG=1 gst-launch-1.0 ...
 The messages are written to standard error and can help troubleshoot warping
 issues.
 
-## Use it in DuckSoup mirror mode
+### Use it in DuckSoup mirror mode
 
 Example:
 
