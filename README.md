@@ -193,7 +193,7 @@ docker run --rm -it -v "$PWD:/work" mozzamp:latest bash -lc '
     videoconvert ! x264enc ! mp4mux ! filesink location=/work/output_landmarked.mp4
 '
 
-# Element usage
+## Element usage
 The plugin expects RGBA input; negotiate with videoconvert if needed. It can also
 negotiate GPU buffers via `video/x-raw(memory:GLMemory)` and will fall back to CPU
 copies when such memory types are unsupported:
