@@ -52,6 +52,8 @@ With smile_mp.dfm such as:
 1,291,  375, 321, 291,   -0.55, -0.55,  2.10
 ```
 
+Tweak mls-alpha to modulate the effect—between 0.8 and 1.4 works well for a realistic smile.
+
 #### DFM file format
 Each non-comment line defines one control rule:
 group, index,  t0, t1, t2,  a, b, c
