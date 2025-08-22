@@ -7,12 +7,16 @@ This repository contains two lean GStreamer video filters (`facelandmarks` and `
 - MediaPipe Face Landmarker uses a `.task` model and `VIDEO` mode (ms timestamps). [refs]
 
 Note:
-
-Each plugin has its own set of parameters. The GPU delegate (`delegate=gpu`) is
+- Each plugin has its own set of parameters. The GPU delegate (`delegate=gpu`) is
 not yet functional and requires more work. We currently recommend keeping
 `ignore-timestamps=false` for typical scenarios.
+- Plugins are still under development, use at your own risk.
 
 # Plugin : mozza_mp
+mozza_mp is an implementation of ARIAS 2018 using the mediapipe facetracker. It enables, amon others to transform the smiles of individuals in the video streams in real time. It implements a Moving Least Square algorithm using the imgwarp library. This enables the user to do other types of transformations than just smile manipulation, such as face morphology manipulation.
+
+Reference : Arias, P., Soladie, C., Bouafif, O., Roebel, A., Seguier, R., & Aucouturier, J. J. (2018). Realistic transformation of facial and vocal smiles in real-time audiovisual streams. IEEE Transactions on Affective Computing, 11(3), 507-518.
+
 
 ## Parameters
 | Parameter | Type | Default | Description |
