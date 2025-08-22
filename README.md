@@ -176,7 +176,7 @@ gst-inspect-1.0 mozzamp
 Or with the .so directly:
 gst-inspect-1.0 libgstmozzamp.so
 
-## 1) Synthetic input (videotestsrc → mp4 file on host)
+## Synthetic input (videotestsrc → mp4 file on host)
 ```
 mkdir -p out
 docker run --rm -it -v "$PWD/out:/out" mozzamp:latest bash -lc '
@@ -188,7 +188,7 @@ docker run --rm -it -v "$PWD/out:/out" mozzamp:latest bash -lc '
 '
 ```
 
-## 2) Process a host video file
+## Process a host video file
 docker run --rm -it -v "$PWD:/work" mozzamp:latest bash -lc '
   gst-launch-1.0 -v \
     filesrc location=/work/input.mp4 ! decodebin ! videoconvert ! video/x-raw,format=RGBA ! \
