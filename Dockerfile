@@ -4,7 +4,7 @@
 #   gstfacelandmarks/ , gstmozzamp/ , gstshared/ , (optional) imgwarp/
 # Each contains its own BUILD file.
 
-FROM ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10 AS builder
+FROM ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 AS builder
 
 ARG MEDIAPIPE_TAG=v0.10.26
 ARG BAZEL_VERSION=6.5.0

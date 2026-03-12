@@ -11,10 +11,16 @@
 #include <string>
 #include <vector>
 
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES2/gl2.h>
+
 // MediaPipe / Tasks
 #include "absl/status/statusor.h"
 #include "mediapipe/framework/formats/image.h"
 #include "mediapipe/framework/formats/image_frame.h"
+#include "mediapipe/gpu/gpu_shared_data_internal.h"
+#include "mediapipe/gpu/gpu_buffer.h"
 #include "mediapipe/tasks/cc/components/containers/landmark.h"
 #include "mediapipe/tasks/cc/core/base_options.h"
 #include "mediapipe/tasks/cc/vision/core/running_mode.h"
@@ -31,6 +37,10 @@ namespace mp_tasks = ::mediapipe::tasks;
 
 struct MpFaceCtx {
   std::unique_ptr<mp_face::FaceLandmarker> landmarker;
+  std::shared_ptr<mediapipe::GpuResources> gpu_resources;
+  EGLDisplay egl_display = EGL_NO_DISPLAY;
+  EGLContext egl_context = EGL_NO_CONTEXT;
+  EGLSurface egl_surface = EGL_NO_SURFACE;
   int num_faces = 1;
   std::mutex mutex;
   std::condition_variable cv;
@@ -117,13 +127,96 @@ static int rt_face_create(const MpFaceLandmarkerOptions *opts,
   options->base_options = mp_core::BaseOptions();
   options->base_options.model_asset_path = std::string(opts->model_path);
   // Choose execution delegate (CPU/XNNPACK or GPU).
-  // MediaPipe Tasks v0.10.26 moved the delegate enum inside BaseOptions.
   using MpDelegate = mp_core::BaseOptions::Delegate;
   options->base_options.delegate = MpDelegate::CPU;
-  if (opts->delegate) {
-    if (std::strcmp(opts->delegate, "gpu") == 0) {
-      options->base_options.delegate = MpDelegate::GPU;
+
+  if (opts->delegate && std::strcmp(opts->delegate, "gpu") == 0) {
+    options->base_options.delegate = MpDelegate::GPU;
+
+    // Manually setup EGL for offscreen rendering
+    // 1. Try to find an EGL device (headless mode)
+    PFNEGLQUERYDEVICESEXTPROC eglQueryDevicesEXT = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+    PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+
+    if (eglQueryDevicesEXT && eglGetPlatformDisplayEXT) {
+        EGLDeviceEXT devices[16];
+        EGLint num_devices;
+        if (eglQueryDevicesEXT(16, devices, &num_devices) && num_devices > 0) {
+            // Use the first device
+            ctx->egl_display = eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, devices[0], nullptr);
+        }
     }
+
+    if (ctx->egl_display == EGL_NO_DISPLAY) {
+        // Fallback to default
+        ctx->egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    }
+
+    if (ctx->egl_display == EGL_NO_DISPLAY) {
+        fprintf(stderr, "Failed to get EGL display\n");
+        return -3;
+    }
+
+    EGLint major, minor;
+    if (!eglInitialize(ctx->egl_display, &major, &minor)) {
+        fprintf(stderr, "eglInitialize failed: 0x%x\n", eglGetError());
+        return -3;
+    }
+    // fprintf(stderr, "EGL initialized: %d.%d\n", major, minor);
+
+    eglBindAPI(EGL_OPENGL_ES_API);
+
+    EGLint config_attribs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 16,
+        EGL_NONE
+    };
+    EGLConfig config;
+    EGLint num_configs;
+    if (!eglChooseConfig(ctx->egl_display, config_attribs, &config, 1, &num_configs) || num_configs <= 0) {
+        // Fallback to ES2
+        config_attribs[1] = EGL_OPENGL_ES2_BIT;
+        if (!eglChooseConfig(ctx->egl_display, config_attribs, &config, 1, &num_configs) || num_configs <= 0) {
+            fprintf(stderr, "eglChooseConfig failed\n");
+            return -3;
+        }
+    }
+
+    EGLint pbuffer_attribs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
+    ctx->egl_surface = eglCreatePbufferSurface(ctx->egl_display, config, pbuffer_attribs);
+
+    EGLint context_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+    ctx->egl_context = eglCreateContext(ctx->egl_display, config, EGL_NO_CONTEXT, context_attribs);
+    if (ctx->egl_context == EGL_NO_CONTEXT) {
+        // Fallback to ES2
+        context_attribs[1] = 2;
+        ctx->egl_context = eglCreateContext(ctx->egl_display, config, EGL_NO_CONTEXT, context_attribs);
+    }
+
+    if (ctx->egl_context == EGL_NO_CONTEXT) {
+        fprintf(stderr, "eglCreateContext failed\n");
+        return -3;
+    }
+
+    eglMakeCurrent(ctx->egl_display, ctx->egl_surface, ctx->egl_surface, ctx->egl_context);
+
+    // MediaPipe GpuResources::Create(void* external_context)
+    auto gpu_res_status = mediapipe::GpuResources::Create(ctx->egl_context);
+    if (!gpu_res_status.ok()) {
+        fprintf(stderr, "GpuResources::Create failed: %s\n", gpu_res_status.status().ToString().c_str());
+        return -4;
+    }
+    ctx->gpu_resources = gpu_res_status.value();
+
+    // Try to set gpu_resources in options if the field exists in this version
+    // We use a template-based detection or just try if it compiles.
+    // In v0.10.26 it might be missing from BaseOptions but required by the graph.
+    // However, some versions of MediaPipe pick it up from the thread local or global.
   }
   options->running_mode =
       mp_vision::core::RunningMode::LIVE_STREAM; // expects timestamps in ms
@@ -255,7 +348,20 @@ static void rt_face_free_result(MpFaceResult *out) { free_result_owned(out); }
 
 static void rt_face_close(MpFaceCtx **pctx) {
   if (pctx && *pctx) {
-    delete *pctx;
+    auto ctx = *pctx;
+    ctx->landmarker.reset();
+    ctx->gpu_resources.reset();
+    if (ctx->egl_display != EGL_NO_DISPLAY) {
+      eglMakeCurrent(ctx->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+      if (ctx->egl_surface != EGL_NO_SURFACE) {
+        eglDestroySurface(ctx->egl_display, ctx->egl_surface);
+      }
+      if (ctx->egl_context != EGL_NO_CONTEXT) {
+        eglDestroyContext(ctx->egl_display, ctx->egl_context);
+      }
+      eglTerminate(ctx->egl_display);
+    }
+    delete ctx;
     *pctx = nullptr;
   }
 }

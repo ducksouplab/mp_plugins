@@ -25,6 +25,13 @@ cc_library(
     deps = [
         "//mediapipe/calculators/tensor:inference_calculator_gl",
         "//mediapipe/calculators/tensor:inference_calculator_gl_advanced",
+        "//mediapipe/calculators/tensor:image_to_tensor_calculator",
+        "//mediapipe/calculators/tensor:tensors_to_landmarks_calculator",
+        "//mediapipe/calculators/tensor:tensors_to_floats_calculator",
+        "//mediapipe/calculators/tensor:tensors_to_classification_calculator",
+        "//mediapipe/gpu:gl_scaler_calculator",
+        "//mediapipe/gpu:gpu_buffer_to_image_frame_calculator",
+        "//mediapipe/gpu:image_frame_to_gpu_buffer_calculator",
     ],
     alwayslink = 1,
     visibility = ["//visibility:public"],
