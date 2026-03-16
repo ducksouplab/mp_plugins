@@ -105,7 +105,7 @@ Groups & warp behavior
 Usage example:
 ```bash
 facelandmarks model=/app/plugins/face_landmarker.task delegate="cpu" threads=6
-```bash
+```
 
 # Build the plugins with Docker 
 ## Build
