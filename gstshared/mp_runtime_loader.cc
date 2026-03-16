@@ -22,7 +22,7 @@ static bool init_impl(const char* path) {
   const char* env = std::getenv("MP_RUNTIME_PATH");
   const char* so_path = path && *path ? path : (env && *env ? env : "libmp_runtime.so");
 
-  g_handle = dlopen(so_path, RTLD_NOW | RTLD_LOCAL);
+  g_handle = dlopen(so_path, RTLD_NOW | RTLD_GLOBAL);
   if (!g_handle) {
     g_last_error = std::string("dlopen failed: ") + dlerror();
     return false;
@@ -90,4 +90,11 @@ extern "C" const MpRuntimeApi* mp_runtime_loader_api(void) {
 
 extern "C" const char* mp_runtime_loader_last_error(void) {
   return g_last_error.c_str();
+}
+
+extern "C" const char* mp_runtime_last_error(void) {
+  if (g_api_ptr && g_api_ptr->get_last_error) {
+    return g_api_ptr->get_last_error();
+  }
+  return nullptr;
 }

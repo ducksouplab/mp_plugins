@@ -2,7 +2,6 @@
 #include "mp_runtime.h"
 
 #include <algorithm>
-#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -14,6 +13,8 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+
+#include <gst/gst.h>
 
 // MediaPipe / Tasks
 #include "absl/status/statusor.h"
@@ -35,6 +36,24 @@ namespace mp_vision = ::mediapipe::tasks::vision;
 namespace mp_face = ::mediapipe::tasks::vision::face_landmarker;
 namespace mp_tasks = ::mediapipe::tasks;
 
+GST_DEBUG_CATEGORY_STATIC(mp_runtime_debug);
+#define GST_CAT_DEFAULT mp_runtime_debug
+
+static std::mutex g_error_mutex;
+static std::string g_last_runtime_error;
+
+static void set_last_error(const std::string& err) {
+    std::lock_guard<std::mutex> lock(g_error_mutex);
+    g_last_runtime_error = err;
+    fprintf(stderr, "[mp_runtime] ERROR: %s\n", err.c_str());
+}
+
+static const char* rt_get_last_error() {
+    std::lock_guard<std::mutex> lock(g_error_mutex);
+    return g_last_runtime_error.c_str();
+}
+
+// 1. The NEW, clean, lock-free Struct
 struct MpFaceCtx {
   std::unique_ptr<mp_face::FaceLandmarker> landmarker;
   std::shared_ptr<mediapipe::GpuResources> gpu_resources;
@@ -42,10 +61,6 @@ struct MpFaceCtx {
   EGLContext egl_context = EGL_NO_CONTEXT;
   EGLSurface egl_surface = EGL_NO_SURFACE;
   int num_faces = 1;
-  std::mutex mutex;
-  std::condition_variable cv;
-  absl::StatusOr<mp_face::FaceLandmarkerResult> pending_result;
-  bool result_ready = false;
 };
 
 // ---------- Version / build ----------
@@ -53,6 +68,13 @@ static int rt_version() { return 10002; } // arbitrary
 static const char *rt_build() { return "mp_runtime (MediaPipe Tasks) 1.0"; }
 
 // ---------- Helpers ----------
+static void ensure_gst_debug() {
+    static gsize initialized = 0;
+    if (g_once_init_enter(&initialized)) {
+        GST_DEBUG_CATEGORY_INIT(mp_runtime_debug, "mp_runtime", 0, "MediaPipe Runtime");
+        g_once_init_leave(&initialized, 1);
+    }
+}
 static std::shared_ptr<ImageFrame> make_imageframe_from_mp(const MpImage *img) {
   if (!img || !img->data || img->width <= 0 || img->height <= 0)
     return nullptr;
@@ -80,7 +102,6 @@ static std::shared_ptr<ImageFrame> make_imageframe_from_mp(const MpImage *img) {
     }
     return frame;
   } else if (img->format == MP_IMAGE_GRAY8) {
-    // Expand gray → SRGB
     auto frame =
         std::make_shared<ImageFrame>(ImageFormat::SRGB, W, H, /*alignment*/ 1);
     uint8_t *dst = frame->MutablePixelData();
@@ -108,7 +129,6 @@ static void free_result_owned(MpFaceResult *out) {
     if (f->landmarks && f->landmarks_count > 0) {
       free((void *)f->landmarks);
     }
-    // no blendshapes allocated in this minimal impl
   }
   free((void *)out->faces);
   out->faces = nullptr;
@@ -118,6 +138,7 @@ static void free_result_owned(MpFaceResult *out) {
 // ---------- API impl ----------
 static int rt_face_create(const MpFaceLandmarkerOptions *opts,
                           MpFaceCtx **out) {
+  ensure_gst_debug();
   if (!out || !opts || !opts->model_path || !*opts->model_path)
     return -1;
 
@@ -126,15 +147,13 @@ static int rt_face_create(const MpFaceLandmarkerOptions *opts,
   auto options = std::make_unique<mp_face::FaceLandmarkerOptions>();
   options->base_options = mp_core::BaseOptions();
   options->base_options.model_asset_path = std::string(opts->model_path);
-  // Choose execution delegate (CPU/XNNPACK or GPU).
   using MpDelegate = mp_core::BaseOptions::Delegate;
   options->base_options.delegate = MpDelegate::CPU;
 
   if (opts->delegate && std::strcmp(opts->delegate, "gpu") == 0) {
+    GST_INFO("GPU delegate requested, initializing EGL...");
     options->base_options.delegate = MpDelegate::GPU;
 
-    // Manually setup EGL for offscreen rendering
-    // 1. Try to find an EGL device (headless mode)
     PFNEGLQUERYDEVICESEXTPROC eglQueryDevicesEXT = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
     PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
 
@@ -142,101 +161,71 @@ static int rt_face_create(const MpFaceLandmarkerOptions *opts,
         EGLDeviceEXT devices[16];
         EGLint num_devices;
         if (eglQueryDevicesEXT(16, devices, &num_devices) && num_devices > 0) {
-            // Use the first device
             ctx->egl_display = eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, devices[0], nullptr);
         }
     }
 
     if (ctx->egl_display == EGL_NO_DISPLAY) {
-        // Fallback to default
         ctx->egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     }
 
     if (ctx->egl_display == EGL_NO_DISPLAY) {
-        fprintf(stderr, "Failed to get EGL display\n");
+        set_last_error("Failed to get EGL display");
         return -3;
     }
 
     EGLint major, minor;
-    if (!eglInitialize(ctx->egl_display, &major, &minor)) {
-        fprintf(stderr, "eglInitialize failed: 0x%x\n", eglGetError());
-        return -3;
-    }
-    // fprintf(stderr, "EGL initialized: %d.%d\n", major, minor);
-
-    eglBindAPI(EGL_OPENGL_ES_API);
+    if (!eglInitialize(ctx->egl_display, &major, &minor)) return -3;
+    if (!eglBindAPI(EGL_OPENGL_ES_API)) return -3;
 
     EGLint config_attribs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
         EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
-        EGL_DEPTH_SIZE, 16,
-        EGL_NONE
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 0, EGL_STENCIL_SIZE, 0, EGL_NONE
     };
     EGLConfig config;
     EGLint num_configs;
     if (!eglChooseConfig(ctx->egl_display, config_attribs, &config, 1, &num_configs) || num_configs <= 0) {
-        // Fallback to ES2
         config_attribs[1] = EGL_OPENGL_ES2_BIT;
         if (!eglChooseConfig(ctx->egl_display, config_attribs, &config, 1, &num_configs) || num_configs <= 0) {
-            fprintf(stderr, "eglChooseConfig failed\n");
             return -3;
         }
     }
 
     EGLint pbuffer_attribs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
     ctx->egl_surface = eglCreatePbufferSurface(ctx->egl_display, config, pbuffer_attribs);
+    if (ctx->egl_surface == EGL_NO_SURFACE) return -3;
 
     EGLint context_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
     ctx->egl_context = eglCreateContext(ctx->egl_display, config, EGL_NO_CONTEXT, context_attribs);
     if (ctx->egl_context == EGL_NO_CONTEXT) {
-        // Fallback to ES2
         context_attribs[1] = 2;
         ctx->egl_context = eglCreateContext(ctx->egl_display, config, EGL_NO_CONTEXT, context_attribs);
     }
+    if (ctx->egl_context == EGL_NO_CONTEXT) return -3;
 
-    if (ctx->egl_context == EGL_NO_CONTEXT) {
-        fprintf(stderr, "eglCreateContext failed\n");
-        return -3;
-    }
+    if (!eglMakeCurrent(ctx->egl_display, ctx->egl_surface, ctx->egl_surface, ctx->egl_context)) return -3;
 
-    eglMakeCurrent(ctx->egl_display, ctx->egl_surface, ctx->egl_surface, ctx->egl_context);
-
-    // MediaPipe GpuResources::Create(void* external_context)
     auto gpu_res_status = mediapipe::GpuResources::Create(ctx->egl_context);
-    if (!gpu_res_status.ok()) {
-        fprintf(stderr, "GpuResources::Create failed: %s\n", gpu_res_status.status().ToString().c_str());
-        return -4;
-    }
+    if (!gpu_res_status.ok()) return -4;
     ctx->gpu_resources = gpu_res_status.value();
-
-    // Try to set gpu_resources in options if the field exists in this version
-    // We use a template-based detection or just try if it compiles.
-    // In v0.10.26 it might be missing from BaseOptions but required by the graph.
-    // However, some versions of MediaPipe pick it up from the thread local or global.
   }
-  options->running_mode =
-      mp_vision::core::RunningMode::LIVE_STREAM; // expects timestamps in ms
-  options->result_callback =
-      [ctx_ptr = ctx.get()](absl::StatusOr<mp_face::FaceLandmarkerResult> res,
-                            const Image &, int64_t) {
-        std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
-        ctx_ptr->pending_result = std::move(res);
-        ctx_ptr->result_ready = true;
-        ctx_ptr->cv.notify_one();
-      };
+
+  // 2. Use synchronous VIDEO mode. No background threads, no callbacks!
+  options->running_mode = mp_vision::core::RunningMode::VIDEO;
+  
   options->num_faces = std::max(1, opts->max_faces);
   options->output_face_blendshapes = (opts->with_blendshapes != 0);
   options->output_facial_transformation_matrixes = (opts->with_geometry != 0);
 
   absl::StatusOr<std::unique_ptr<mp_face::FaceLandmarker>> lm =
       mp_face::FaceLandmarker::Create(std::move(options));
+
   if (!lm.ok()) {
     std::string err = lm.status().ToString();
-    fprintf(stderr, "FaceLandmarker::Create failed: %s\n", err.c_str());
+    set_last_error("FaceLandmarker::Create failed: " + err);
+    GST_FIXME("FaceLandmarker::Create failed: %s", err.c_str());
     return -2;
   }
 
@@ -244,49 +233,32 @@ static int rt_face_create(const MpFaceLandmarkerOptions *opts,
   ctx->num_faces = std::max(1, opts->max_faces);
 
   *out = ctx.release();
+  GST_INFO("FaceLandmarker context created successfully");
   return 0;
 }
 
+// 3. The NEW Synchronous rt_face_detect
 static int rt_face_detect(MpFaceCtx *ctx, const MpImage *img, int64_t ts_us,
                           MpFaceResult *out) {
+  ensure_gst_debug();
   if (!ctx || !ctx->landmarker || !out)
     return -1;
 
-  // Initialize output
   out->faces = nullptr;
   out->faces_count = 0;
   out->timestamp_us = (ts_us < 0) ? 0 : ts_us;
 
-  // Convert input to MediaPipe Image
   std::shared_ptr<ImageFrame> frame_ptr = make_imageframe_from_mp(img);
-  if (!frame_ptr)
-    return -3;
+  if (!frame_ptr) return -3;
 
   mediapipe::Image mp_image(frame_ptr);
-
-  // MediaPipe LIVE_STREAM mode expects timestamps in milliseconds.
   const int64_t ts_ms = (ts_us <= 0) ? 0 : (ts_us / 1000);
 
-  {
-    std::lock_guard<std::mutex> lock(ctx->mutex);
-    ctx->result_ready = false;
-  }
-
-  absl::Status status = ctx->landmarker->DetectAsync(mp_image, ts_ms);
-  if (!status.ok()) {
-    out->faces = nullptr;
-    out->faces_count = 0;
-    out->timestamp_us = ts_us;
-    return 0;
-  }
-
-  std::unique_lock<std::mutex> lock(ctx->mutex);
-  ctx->cv.wait(lock, [&ctx]() { return ctx->result_ready; });
-  auto res_or = std::move(ctx->pending_result);
-  ctx->result_ready = false;
-  lock.unlock();
+  // Synchronous processing! Fast and lock-free.
+  auto res_or = ctx->landmarker->DetectForVideo(mp_image, ts_ms);
 
   if (!res_or.ok()) {
+    GST_ERROR("FaceLandmarker DetectForVideo error: %s", res_or.status().ToString().c_str());
     out->faces = nullptr;
     out->faces_count = 0;
     out->timestamp_us = ts_us;
@@ -294,20 +266,15 @@ static int rt_face_detect(MpFaceCtx *ctx, const MpImage *img, int64_t ts_us,
   }
 
   const mp_face::FaceLandmarkerResult &res = res_or.value();
-
-  // Allocate faces array
   const int F = static_cast<int>(res.face_landmarks.size());
   MpFace *faces = nullptr;
   if (F > 0) {
     faces = static_cast<MpFace *>(malloc(sizeof(MpFace) * F));
-    if (!faces)
-      return -2;
+    if (!faces) return -2;
     std::memset(faces, 0, sizeof(MpFace) * F);
   }
 
-  // Copy landmarks for each face
   for (int fi = 0; fi < F; ++fi) {
-    // NormalizedLandmarks is a struct with a .landmarks vector
     const auto &lmks_struct = res.face_landmarks[fi];
     const std::vector<mp_tasks::components::containers::NormalizedLandmark>
         &pts_vec = lmks_struct.landmarks;
@@ -318,10 +285,7 @@ static int rt_face_detect(MpFaceCtx *ctx, const MpImage *img, int64_t ts_us,
     if (N > 0) {
       pts = static_cast<MpLandmark *>(malloc(sizeof(MpLandmark) * N));
       if (!pts) {
-        // Clean up what we already allocated for earlier faces
-        for (int j = 0; j < fi; ++j) {
-          free(const_cast<MpLandmark *>(faces[j].landmarks));
-        }
+        for (int j = 0; j < fi; ++j) free(const_cast<MpLandmark *>(faces[j].landmarks));
         free(faces);
         return -2;
       }
@@ -331,11 +295,8 @@ static int rt_face_detect(MpFaceCtx *ctx, const MpImage *img, int64_t ts_us,
         pts[i].z = pts_vec[i].z;
       }
     }
-
     faces[fi].landmarks = pts;
     faces[fi].landmarks_count = N;
-
-    // blendshapes/pose remain zero unless you enabled them in options elsewhere
   }
 
   out->faces = faces;
@@ -346,6 +307,7 @@ static int rt_face_detect(MpFaceCtx *ctx, const MpImage *img, int64_t ts_us,
 
 static void rt_face_free_result(MpFaceResult *out) { free_result_owned(out); }
 
+// 4. RESTORED rt_face_close
 static void rt_face_close(MpFaceCtx **pctx) {
   if (pctx && *pctx) {
     auto ctx = *pctx;
@@ -375,6 +337,7 @@ static const MpRuntimeApi g_api = {
     /*face_detect=*/rt_face_detect,
     /*face_free_result=*/rt_face_free_result,
     /*face_close=*/rt_face_close,
+    /*get_last_error=*/rt_get_last_error,
 };
 
 extern "C" const MpRuntimeApi *mp_runtime_get_api(void) { return &g_api; }

@@ -47,6 +47,7 @@ cc_binary(
         "//mediapipe/tasks/cc/vision/face_landmarker:face_landmarker",
         "//mediapipe/framework/formats:image",
         "@com_google_absl//absl/status:statusor",
+        "//third_party/sysroot_gst:gstreamer",
     ],
     copts = [
         "-O2",

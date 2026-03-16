@@ -94,6 +94,7 @@ typedef struct MpRuntimeApi {
   int   (*face_detect)(MpFaceCtx*, const MpImage*, int64_t timestamp_us, MpFaceResult*);
   void  (*face_free_result)(MpFaceResult*);
   void  (*face_close)(MpFaceCtx**);
+  const char* (*get_last_error)(void);
 } MpRuntimeApi;
 
 // Exported by the runtime shared object:

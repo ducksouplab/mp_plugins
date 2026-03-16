@@ -1,19 +1,19 @@
-# Mediapipe plugins in Gstremaer
+# Mediapipe plugins in GStreamer
 
-This repository contains two lean GStreamer video filters (`facelandmarks` and `mozza_mp`) which run **MediaPipe Face Landmarker (C++ Tasks)** on CPU and overlay the landmarks on RGBA frames. The project is still under active development: the GPU delegate path (`delegate=gpu`) is not functional yet and requires further work. Depends on OpenCV (see build files for details). Set `delegate=gpu` to enable the MediaPipe GPU delegate when available once implemented. We currently recommend running with `ignore-timestamps=false`.
+This repository contains two lean GStreamer video filters (`facelandmarks` and `mozza_mp`) which run **MediaPipe Face Landmarker (C++ Tasks)** on CPU or GPU and overlay the landmarks on RGBA frames. 
+
+Depends on OpenCV (see build files for details). Set `delegate=gpu` to enable the MediaPipe GPU delegate. We currently recommend running with `ignore-timestamps=false`.
 - Base image: `ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10`
 - GStreamer plugin base class: **GstVideoFilter** (`transform_frame_ip`).  
-  See GStreamer docs for GstVideoFilter and plugin discovery. [refs]  
-- MediaPipe Face Landmarker uses a `.task` model and `VIDEO` mode (ms timestamps). [refs]
+- MediaPipe Face Landmarker uses a `.task` model and `LIVE_STREAM` mode.
 
 Note:
-- Each plugin has its own set of parameters. The GPU delegate (`delegate=gpu`) is
-not yet functional and requires more work. We currently recommend keeping
-`ignore-timestamps=false` for typical scenarios.
+- Each plugin has its own set of parameters.
+- We currently recommend keeping `ignore-timestamps=false` for typical scenarios.
 - Plugins are still under development, use at your own risk.
 
 # Plugin : mozza_mp
-mozza_mp is an implementation of ARIAS 2018 using the mediapipe facetracker. It enables, amon others to transform the smiles of individuals in the video streams in real time. It implements a Moving Least Square algorithm using the imgwarp library. This enables the user to do other types of transformations than just smile manipulation, such as face morphology manipulation.
+mozza_mp is an implementation of ARIAS 2018 using the mediapipe facetracker. It enables, among others, to transform the smiles of individuals in the video streams in real time. It implements a Moving Least Square algorithm using the imgwarp library. This enables the user to do other types of transformations than just smile manipulation, such as face morphology manipulation.
 
 Reference : Arias, P., Soladie, C., Bouafif, O., Roebel, A., Seguier, R., & Aucouturier, J. J. (2018). Realistic transformation of facial and vocal smiles in real-time audiovisual streams. IEEE Transactions on Affective Computing, 11(3), 507-518.
 
@@ -31,17 +31,21 @@ Reference : Arias, P., Soladie, C., Bouafif, O., Roebel, A., Seguier, R., & Auco
 | `roi-pad` | int [0..200] | 24 | Padding around group ROI when `warp-mode=per-group-roi` (pixels). |
 | `overlay` | boolean | false | Draw source/destination control points and vectors. |
 | `drop` | boolean | false | Drop frame when no face is detected. |
-| `show-landmarks` | boolean | false | Draw all detected landmarks even without a DFM. |
+| `show-landmarks` | boolean | false | Draw all detected landmarks (uses `landmark-radius` and `landmark-color`). |
+| `landmark-radius` | int | 2 | Radius of landmark dots in pixels (when `show-landmarks=true`). |
+| `landmark-color` | uint | 0x0066CCFF | Packed RGBA color for landmarks (default: blue). |
+| `max-faces` | int | 1 | Maximum number of faces to detect. |
+| `threads` | int | 4 | Number of CPU threads for MediaPipe (0=system default). |
 | `strict-dfm` | boolean | false | Fail to start if a deform file is given but cannot be loaded. |
 | `force-rgb` | boolean | false | No-op; pads already require RGBA. |
 | `ignore-timestamps` | boolean | false | Pass `0` as timestamp to the detector; recommended to keep `false`. |
 | `log-every` | uint | 60 | Emit a log message every N frames (0 disables). |
 | `user-id` | string | none | Accepted but ignored; useful for uniform configs. |
-| `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`, `xnnpack`). `delegate=gpu` is not working and needs further development. |
+| `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`). |
 
 Recommended invocation:
 
-`mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu ignore-timestamps=false warp-mode=per-group-roi`
+`mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu threads=4 ignore-timestamps=false warp-mode=per-group-roi`
 
 For smile in the server use:
 mozza_mp deform=/app/plugins/smile_mp.dfm alpha=2 model=/app/plugins/face_landmarker.task warp-mode=per-group-roi
@@ -92,8 +96,9 @@ Groups & warp behavior
 | `max-faces` | int | 1 | Maximum number of faces to detect. |
 | `draw` | boolean | true | Overlay landmarks on the frame. |
 | `radius` | int | 2 | Radius of landmark dots in pixels. |
-| `color` | uint | 0x00FF00FF | Packed RGBA color for landmarks. |
-| `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`, `xnnpack`). `delegate=gpu` is not working and needs further development. |
+| `color` | uint | 0x00FF00FF | Packed RGBA color for landmarks (default: green). |
+| `threads` | int | 4 | Number of CPU threads for MediaPipe (0=system default). |
+| `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`). |
 
 # Build the plugins with Docker 
 ## Build
@@ -127,7 +132,7 @@ docker pull ducksouplab/mozzamp:latest
 docker run --rm -it mozzamp:latest \
   bash -lc 'gst-inspect-1.0 mozzamp'
 ```
-You should see properties: model, max-faces, draw, radius, color, delegate.
+You should see properties: model, max-faces, draw, radius, color, delegate, threads.
 
 ## Get the .task model
 ```
@@ -138,7 +143,7 @@ chmod +x download_face_landmarker_model.sh
 ## Get the .so files
 ```
 chmod +x get_so_file.sh
-./get_so_file.sh mozzamp:latest out
+./get_so_file.sh ducksouplab/mozzamp:latest
 
 ## Careful with this line : remove old plugins from destination
 ##sudo rm -r /home/deploy/deploy-ducksoup/app/plugins/mp_plugins/
@@ -166,7 +171,7 @@ issues.
 
 Example:
 
-mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu ignore-timestamps=false
+mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu threads=4 ignore-timestamps=false
 
 # Quick runs
 
@@ -183,7 +188,7 @@ docker run --rm -it -v "$PWD/out:/out" mozzamp:latest bash -lc '
   gst-launch-1.0 -v \
     videotestsrc num-buffers=300 ! video/x-raw,width=640,height=480,framerate=30/1 ! \
     videoconvert ! video/x-raw,format=RGBA ! \
-    mozzamp model=/opt/models/face_landmarker.task max-faces=1 draw=true radius=2 color=0x00FF00FF ! \
+    mozzamp model=/opt/models/face_landmarker.task max-faces=1 threads=4 draw=true landmark-radius=2 landmark-color=0x00FF00FF ! \
     videoconvert ! x264enc tune=zerolatency ! mp4mux ! filesink location=/out/landmarked.mp4
 '
 ```
@@ -192,7 +197,7 @@ docker run --rm -it -v "$PWD/out:/out" mozzamp:latest bash -lc '
 docker run --rm -it -v "$PWD:/work" mozzamp:latest bash -lc '
   gst-launch-1.0 -v \
     filesrc location=/work/input.mp4 ! decodebin ! videoconvert ! video/x-raw,format=RGBA ! \
-    mozzamp model=/opt/models/face_landmarker.task max-faces=1 ! \
+    mozzamp model=/opt/models/face_landmarker.task max-faces=1 threads=4 ! \
     videoconvert ! x264enc ! mp4mux ! filesink location=/work/output_landmarked.mp4
 '
 
@@ -205,7 +210,7 @@ copies when such memory types are unsupported:
 gst-launch-1.0 -v \
   videotestsrc ! video/x-raw,width=640,height=480 ! \
   videoconvert ! video/x-raw,format=RGBA ! \
-  mozzamp model=/opt/models/face_landmarker.task max-faces=1 draw=true radius=2 color=0x00FF00FF ! \
+  mozzamp model=/opt/models/face_landmarker.task max-faces=1 threads=4 draw=true landmark-radius=2 landmark-color=0x00FF00FF ! \
   fakesink
 ```
 
@@ -214,7 +219,7 @@ gst-launch-1.0 -v \
 	•	Plugin discovery: install to /usr/lib/x86_64-linux-gnu/gstreamer-1.0/ or set GST_PLUGIN_PATH/--gst-plugin-path. [refs]
 	•	MediaPipe: we pass frames as ImageFrame(SRGBA) and call DetectForVideo(image, timestamp_ms). The model is a .task bundle downloaded from the official guide. [refs]
 	•	Performance: start with 640×480; increase as needed.
-	•	GPU: this example runs on CPU (simpler, portable). MediaPipe GPU graphs require a different setup.
+	•	GPU: this example runs on CPU or GPU via `delegate` parameter.
 
 
 # Update MediaPipe version
@@ -235,4 +240,3 @@ https://gstreamer.freedesktop.org/documentation/plugin-development/basics/testap
 
 • Bazelisk (recommended Bazel launcher).
 https://bazel.build/install/bazelisk
-

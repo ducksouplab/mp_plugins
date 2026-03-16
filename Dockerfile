@@ -30,6 +30,10 @@ RUN git clone --depth=1 --branch ${MEDIAPIPE_TAG} \
 
 # 2) Copy your plugin sources into the mediapipe workspace
 WORKDIR /opt/mediapipe-src
+
+RUN sed -i -E 's/EGL_DEPTH_SIZE,[[:space:]]*16/EGL_DEPTH_SIZE, 0/g' mediapipe/gpu/gl_context_egl.cc && \
+    sed -i -E 's/EGL_STENCIL_SIZE,[[:space:]]*8/EGL_STENCIL_SIZE, 0/g' mediapipe/gpu/gl_context_egl.cc
+
 COPY gstfacelandmarks/ gstfacelandmarks/
 COPY gstmozzamp/       gstmozzamp/
 COPY gstshared/        gstshared/
@@ -78,25 +82,28 @@ cc_library(
 EOF
 BASH
 
-# 4) Bazel config (CPU and GPU + make TF repo rules happy)
+# 4) Bazel config
 RUN printf '%s\n' \
   'common --experimental_repo_remote_exec' \
   'common --repo_env=HERMETIC_PYTHON_VERSION=3.11' \
-  'build --define xnn_enable_avxvnni=false' \
   'build --define xnn_enable_avxvnniint8=false' \
   'build --cxxopt=-std=gnu++17 --host_cxxopt=-std=gnu++17' \
   'build --cxxopt=-I/usr/include/opencv4' \
-
+  'build --copt=-DMESA_EGL_NO_X11_HEADERS' \
+  'build --copt=-DEGL_NO_X11' \
+  'build --copt=-DMEDIAPIPE_OMIT_EGL_WINDOW_BIT' \
   > .bazelrc
+
+RUN sed -i 's/constexpr int kDelegateFallbackDefaultNumThreads = -1;/constexpr int kDelegateFallbackDefaultNumThreads = 4;/g' mediapipe/calculators/tensor/inference_calculator_cpu.cc || true
 
 # 5) Build both plugins inside the Mediapipe workspace
 RUN set -eux; \
   bazel clean --expunge; \
-  bazel build \
+  bazel build -c opt --copt=-O3 \
     //gstshared:libmp_runtime.so \
     //gstfacelandmarks:libgstfacelandmarks.so \
     //gstmozzamp:libgstmozzamp.so; \
-  bbin="$(bazel info bazel-bin)"; \
+  bbin="$(bazel info -c opt bazel-bin)"; \
   install -D -m0755 "$bbin/gstshared/libmp_runtime.so"               /out/lib/libmp_runtime.so; \
   install -D -m0755 "$bbin/gstfacelandmarks/libgstfacelandmarks.so" /out/plugins/libgstfacelandmarks.so; \
   install -D -m0755 "$bbin/gstmozzamp/libgstmozzamp.so"             /out/plugins/libgstmozzamp.so; \

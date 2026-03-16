@@ -20,6 +20,9 @@ const MpRuntimeApi* mp_runtime_loader_api(void);
 // Most recent error (owned by loader; valid until next init attempt).
 const char* mp_runtime_loader_last_error(void);
 
+// Most recent error from the runtime implementation itself (if loaded).
+const char* mp_runtime_last_error(void);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
@@ -29,7 +32,11 @@ const char* mp_runtime_loader_last_error(void);
 namespace mp_runtime_loader {
   inline bool Init(const char* path = nullptr) { return mp_runtime_loader_init(path); }
   inline const MpRuntimeApi& MpApi()           { return *mp_runtime_loader_api(); }
-  inline const char* last_error()              { return mp_runtime_loader_last_error(); }
+  inline const char* last_error()              { 
+    const char* err = mp_runtime_last_error();
+    if (err && *err) return err;
+    return mp_runtime_loader_last_error(); 
+  }
 
   // Back-compat shim for older code that called mp_runtime_loader::MpApi::last_error()
   struct MpApi {
