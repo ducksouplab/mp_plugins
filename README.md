@@ -185,7 +185,7 @@ If you run this in docker and want to improve face detection times make sure to 
       - OMP_NUM_THREADS=4
       - XNNPACK_NUM_THREADS=4
       - TFLITE_NUM_THREADS=4
-```bash
+```
 
 # Quick runs
 
