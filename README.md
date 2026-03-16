@@ -182,6 +182,8 @@ mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corne
 
 If you run this in docker and want to improve face detection times make sure to add this to your docker compose file:
 ```bash
+    environment:
+		.... all your other options...
       - OMP_NUM_THREADS=4
       - XNNPACK_NUM_THREADS=4
       - TFLITE_NUM_THREADS=4
