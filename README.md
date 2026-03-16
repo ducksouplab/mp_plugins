@@ -100,6 +100,13 @@ Groups & warp behavior
 | `threads` | int | 4 | Number of CPU threads for MediaPipe (0=system default). |
 | `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`). |
 
+## Example
+
+Usage example:
+```bash
+facelandmarks model=/app/plugins/face_landmarker.task delegate="cpu" threads=6
+```bash
+
 # Build the plugins with Docker 
 ## Build
 ```bash
@@ -171,7 +178,14 @@ issues.
 
 Example:
 
-mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu threads=4 ignore-timestamps=false
+mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu threads=4 ignore-timestamps=false threads=4
+
+If you run this in docker and want to improve face detection times make sure to add this to your docker compose file:
+```bash
+      - OMP_NUM_THREADS=4
+      - XNNPACK_NUM_THREADS=4
+      - TFLITE_NUM_THREADS=4
+```bash
 
 # Quick runs
 
@@ -219,7 +233,7 @@ gst-launch-1.0 -v \
 	•	Plugin discovery: install to /usr/lib/x86_64-linux-gnu/gstreamer-1.0/ or set GST_PLUGIN_PATH/--gst-plugin-path. [refs]
 	•	MediaPipe: we pass frames as ImageFrame(SRGBA) and call DetectForVideo(image, timestamp_ms). The model is a .task bundle downloaded from the official guide. [refs]
 	•	Performance: start with 640×480; increase as needed.
-	•	GPU: this example runs on CPU or GPU via `delegate` parameter.
+	•	GPU: this example runs on CPU or GPU via `delegate` parameter. (GPU is currently not working)
 
 
 # Update MediaPipe version
