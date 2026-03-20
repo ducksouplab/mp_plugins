@@ -36,6 +36,7 @@ cc_library(
         "dfm.hpp",
         "deform_utils.hpp",
     ],
+    includes = ["."],
     copts = [
         "-fPIC",
         "-I/usr/include/opencv4",

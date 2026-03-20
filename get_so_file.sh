@@ -15,6 +15,7 @@ mkdir -p "$DEST/plugins" "$DEST/lib"
 # Copy the plugins and the (stub) runtime out of the image
 docker cp "$CID":/out/plugins/libgstfacelandmarks.so "$DEST/plugins/" || true
 docker cp "$CID":/out/plugins/libgstmozzamp.so       "$DEST/plugins/" || true
+docker cp "$CID":/out/plugins/libgstmozzamp_gpu.so   "$DEST/plugins/" || true
 docker cp "$CID":/out/lib/libmp_runtime.so           "$DEST/lib/"      || true
 
 echo "Wrote:"

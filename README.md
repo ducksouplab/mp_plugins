@@ -1,9 +1,13 @@
 # Mediapipe plugins in GStreamer
 
-This repository contains two lean GStreamer video filters (`facelandmarks` and `mozza_mp`) which run **MediaPipe Face Landmarker (C++ Tasks)** on CPU or GPU and overlay the landmarks on RGBA frames. 
+This repository contains three lean GStreamer video filters (`facelandmarks`, `mozza_mp`, and `mozza_mp_gpu`) which run face landmark detection and optional deformations.
 
-Depends on OpenCV (see build files for details). Set `delegate=gpu` to enable the MediaPipe GPU delegate. We currently recommend running with `ignore-timestamps=false`.
-- Base image: `ducksouplab/debian-gstreamer:deb12-cuda12.2-plugins-gst1.24.10`
+- **facelandmarks** (CPU): MediaPipe Face Landmarker (C++ Tasks) on CPU.
+- **mozza_mp** (CPU): MediaPipe Face Landmarker + OpenCV MLS warping on CPU.
+- **mozza_mp_gpu** (GPU): TensorRT Face Landmarker + CUDA MLS warping on GPU.
+
+We currently recommend running with `ignore-timestamps=false`.
+- Base image: `ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0`
 - GStreamer plugin base class: **GstVideoFilter** (`transform_frame_ip`).  
 - MediaPipe Face Landmarker uses a `.task` model and `LIVE_STREAM` mode.
 
@@ -41,13 +45,12 @@ Reference : Arias, P., Soladie, C., Bouafif, O., Roebel, A., Seguier, R., & Auco
 | `ignore-timestamps` | boolean | false | Pass `0` as timestamp to the detector; recommended to keep `false`. |
 | `log-every` | uint | 60 | Emit a log message every N frames (0 disables). |
 | `user-id` | string | none | Accepted but ignored; useful for uniform configs. |
-| `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`). |
 
 Recommended invocation:
 
-`mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu threads=4 ignore-timestamps=false warp-mode=per-group-roi`
+`mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 threads=4 ignore-timestamps=false warp-mode=per-group-roi`
 
-For smile in the server use:
+When using DuckSoup, and transforming smiles in a server live, we recommend:
 mozza_mp deform=/app/plugins/smile_mp.dfm alpha=2 model=/app/plugins/face_landmarker.task warp-mode=per-group-roi
 
 With smile_mp.dfm such as:
@@ -59,18 +62,16 @@ With smile_mp.dfm such as:
 1,291,  375, 321, 291,   -0.55, -0.55,  2.10
 ```
 
-Tweak mls-alpha to modulate the effect—between 0.8 and 1.4 works well for a realistic smile.
+Tweak mls-alpha to modulate the effect—between 0.8 and 1.4 works well for a realistic smile. Tweak also alpha for the intensity parameter.
 
 ## DFM file format
 Each non-comment line defines one control rule:
 group, index,  t0, t1, t2,  a, b, c
-
 	- group – Integer group id. Rows with the same id form one group (used by warp-mode).
 	- index – Landmark to move.
 	- t0,t1,t2 – Anchor landmark indices used to build a barycentric target point T = a·L[t0] + b·L[t1] + c·L[t2].
 Weights need not sum to 1; negative weights are allowed (extrapolation), subject to your use.
 	- a,b,c – Barycentric weights.
-
 
   For each rule, the destination of index is:
   ```dst = cur + alpha * (T - cur)````
@@ -88,6 +89,46 @@ Groups & warp behavior
 	•	If a rule references an out-of-range landmark index, that row is skipped (recommended behavior); enable strict-dfm during development to catch mistakes early.
 
 
+# Plugin : mozza_mp_gpu (GPU Accelerated)
+`mozza_mp_gpu` is a high-performance, GPU-accelerated drop-in replacement for `mozza_mp`. It uses **TensorRT** for two-stage face detection and landmarking, and **CUDA** kernels for the Moving Least Square (MLS) warping.
+
+**Key advantages:**
+- **Performance:** ~10ms total per frame (vs ~40ms on multitreaded CPU).
+- **Precision:** Uses TensorRT FP16 inference for both detection and 478 landmarks.
+- **Parallelism:** MLS warping is performed directly on the GPU using custom CUDA kernels.
+
+## Parameters
+The parameters are identical to `mozza_mp`, but the main model flag is renamed for clarity:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model_path`| string | required | Path to `face_landmarker.task`. |
+| `model`     | string | alias    | Alias for `model_path` (for compatibility). |
+| `gpu-id`    | int    | 0        | CUDA device index to use. |
+
+**Crucial Note on Models:**
+Unlike the CPU version, `mozza_mp_gpu` requires **ONNX** files. The `model_path` points to the `.task` file, but the plugin will look in that **same folder** for `face_detector.onnx` and `face_landmarks.onnx`.
+
+## TensorRT Engine Caching
+The first time you run the plugin on a new machine or a different GPU, TensorRT will spend **20-60 seconds** "optimizing" the model for your specific hardware.
+- This only happens **once**.
+- The result is saved as an `.engine_smXX_fp16` file in the same folder.
+- Subsequent runs will load this engine file in milliseconds.
+
+## Setup
+1. Extract and convert models:
+   ```bash
+   python3 convert_models.py face_landmarker.task
+   ```
+2. Place the generated `.onnx` files alongside the `.task` file.
+
+## Example
+```bash
+gst-launch-1.0 -v \
+  filesrc location=input.mp4 ! decodebin ! videoconvert ! video/x-raw,format=RGBA ! \
+  mozza_mp_gpu model_path=/models/face_landmarker.task deform=/models/smile.dfm alpha=1.5 ! \
+  videoconvert ! autovideosink
+```
+
 # Plugin : facelandmarks
 
 | Parameter | Type | Default | Description |
@@ -98,13 +139,12 @@ Groups & warp behavior
 | `radius` | int | 2 | Radius of landmark dots in pixels. |
 | `color` | uint | 0x00FF00FF | Packed RGBA color for landmarks (default: green). |
 | `threads` | int | 4 | Number of CPU threads for MediaPipe (0=system default). |
-| `delegate` | string | cpu | Runtime execution delegate (`cpu`, `gpu`). |
 
 ## Example
 
 Usage example:
 ```bash
-facelandmarks model=/app/plugins/face_landmarker.task delegate="cpu" threads=6
+facelandmarks model=/app/plugins/face_landmarker.task threads=6
 ```
 
 # Build the plugins with Docker 
@@ -142,6 +182,8 @@ docker run --rm -it mozzamp:latest \
 You should see properties: model, max-faces, draw, radius, color, delegate, threads.
 
 ## Get the .task model
+
+If you haven't:
 ```
 chmod +x download_face_landmarker_model.sh
 ./download_face_landmarker_model.sh
@@ -151,12 +193,17 @@ chmod +x download_face_landmarker_model.sh
 ```
 chmod +x get_so_file.sh
 ./get_so_file.sh ducksouplab/mozzamp:latest
+```
 
-## Careful with this line : remove old plugins from destination
+## Move the .so to DuckSoup
+If you are using DuckSoup, make sure to remove old plugins and copy the new .so files to 
+the correct destination so taht DuckSouop can see them. In a deploy user it looks like 
+this (change with the appropriate path where you use your plugins): 
+``` 
+## Careful with this line : this removes old plugins from destination
 ##sudo rm -r /home/deploy/deploy-ducksoup/app/plugins/mp_plugins/
 
-!!!! -- Carefull, at the moment Ducksoup won't load any of the plugins if both of them are passed in the folder, because some weird dependency issue, in which both of them load the library and it crashes. I haven't corrected this yet... Maybe will have to do it in the future...
-
+## Copy the new plugins to destination, as well as the face_landmarker.task files
 sudo cp -r mp-out /home/deploy/deploy-ducksoup/app/plugins/mp_plugins
 sudo cp dist/face_landmarker.task /home/deploy/deploy-ducksoup/app/plugins/face_landmarker.task
 ```
@@ -178,9 +225,9 @@ issues.
 
 Example:
 
-mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 delegate=cpu threads=4 ignore-timestamps=false threads=4
+mozza_mp model=/app/plugins/face_landmarker.task deform=/app/plugins/smile_corners_only.dfm alpha=1.7 threads=4 ignore-timestamps=false
 
-If you run this in docker and want to improve face detection times make sure to add this to your docker compose file:
+If you run this in within docker and are using the CPU version, and want to improve face detection times by using multihtraeding, make sure to add this to your docker compose file:
 ```bash
     environment:
 		.... all your other options...
@@ -188,6 +235,22 @@ If you run this in docker and want to improve face detection times make sure to 
       - XNNPACK_NUM_THREADS=4
       - TFLITE_NUM_THREADS=4
 ```
+
+# Testing
+You can verify all plugins using the provided automated test script. This script checks for plugin availability and runs a functional test on `test_face.jpg`.
+
+**Inside Docker:**
+```bash
+docker run --rm --gpus all -v "$PWD:/models" \
+  -e GST_PLUGIN_PATH=/models/mp-out/plugins \
+  mp_plugins_test:latest \
+  bash -c "cd /models && ./test_plugins.sh"
+```
+
+The script will generate:
+- `test_out_landmarks.png`: Landmarks overlay (CPU)
+- `test_out_mozza_cpu.png`: Deformation (CPU)
+- `test_out_mozza_gpu.png`: Deformation (GPU)
 
 # Quick runs
 
@@ -222,7 +285,7 @@ The plugin expects RGBA input; negotiate with videoconvert if needed. It can als
 negotiate GPU buffers via `video/x-raw(memory:GLMemory)` and will fall back to CPU
 copies when such memory types are unsupported:
 
-````
+```
 gst-launch-1.0 -v \
   videotestsrc ! video/x-raw,width=640,height=480 ! \
   videoconvert ! video/x-raw,format=RGBA ! \
@@ -235,13 +298,53 @@ gst-launch-1.0 -v \
 	•	Plugin discovery: install to /usr/lib/x86_64-linux-gnu/gstreamer-1.0/ or set GST_PLUGIN_PATH/--gst-plugin-path. [refs]
 	•	MediaPipe: we pass frames as ImageFrame(SRGBA) and call DetectForVideo(image, timestamp_ms). The model is a .task bundle downloaded from the official guide. [refs]
 	•	Performance: start with 640×480; increase as needed.
-	•	GPU: this example runs on CPU or GPU via `delegate` parameter. (GPU is currently not working)
+	•	GPU: `mozza_mp_gpu` provides native NVIDIA GPU acceleration via TensorRT and CUDA. The CPU plugins (`facelandmarks`, `mozza_mp`) are strictly CPU-based.
 
 
 # Update MediaPipe version
 ```
 docker build --build-arg MP_REF=v0.10.xx -t mozzamp:latest .
 ```
+
+# Python Wrapper: mozza_process.py
+We provide a Python wrapper that simplifies processing images and videos by automatically managing Docker mounts and GStreamer pipelines.
+
+### Prerequisites
+- Python 3
+- Docker (with NVIDIA Container Toolkit for GPU mode), prefer CPU if no need of Real Time processing—this will be easier to execute.
+- Get the .task model if you haven't
+```
+chmod +x download_face_landmarker_model.sh
+./download_face_landmarker_model.sh
+```
+
+- For GPU, see convert models, below.
+
+### Basic Usage
+```bash
+# Process a video using GPU
+python3 mozza_process.py --input assets/video_example.mp4 --output assets/output.mp4 --mode gpu --deform smile.dfm --alpha 2.0
+
+# Process an image using CPU
+python3 mozza_process.py --input assets/test_face.jpg --output assets/output.png --mode cpu --deform smile.dfm --alpha 1.5
+
+# Extract landmarks only (green dots)
+python3 mozza_process.py --input assets/test_face.jpg --output assets/landmarks.png --mode landmarks --show-landmarks
+```
+
+### All Parameters
+| Flag | Description |
+|------|-------------|
+| `--input` | Input image or video file path. |
+| `--output`| Output file path (automatically adds extension if missing). |
+| `--mode`  | `gpu`, `cpu`, or `landmarks`. |
+| `--deform`| Path to your `.dfm` file. |
+| `--alpha` | Intensity of the transformation (default 1.0). |
+| `--model-path`| Path to `.task` model (default `face_landmarker.task`). |
+| `--show-landmarks`| Draw landmarks on the output. |
+| `--verbose`| Print the full Docker and GStreamer commands. |
+
+Run `python3 mozza_process.py --help` for the full list of supported parameters.
 
 # References
 • MediaPipe Face Landmarker task & models (C++/Tasks, .task bundle, running modes).
@@ -256,3 +359,35 @@ https://gstreamer.freedesktop.org/documentation/plugin-development/basics/testap
 
 • Bazelisk (recommended Bazel launcher).
 https://bazel.build/install/bazelisk
+
+
+# Developer Tips & Lessons Learned
+### Testing with GStreamer 1.28.0
+Always test and run using the base image specified in the Dockerfiles:
+`ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0`
+
+Run an interactive debugging shell:
+```bash
+docker run --rm -it --gpus all \
+  -v "$PWD:/work" -w /work \
+  -e GST_PLUGIN_PATH=/work/mp-out/plugins \
+  -e LD_LIBRARY_PATH=/work/mp-out/lib:/opt/gstreamer/lib/x86_64-linux-gnu \
+  ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 bash
+```
+
+### Plugin Naming & Symbols
+GStreamer's dynamic loader requires the `GST_PLUGIN_DEFINE` macro name to match the exported symbol in the `.so` file.
+- **Filename:** `libgstmozzamp_gpu.so`
+- **Plugin Name:** `mozzamp_gpu` (must match the filename suffix)
+- **Verified via:** `nm -D libgstmozzamp_gpu.so | grep gst_plugin_`
+
+### Dependency Management
+The GPU plugin requires `libcudart.so.12` and TensorRT libraries. When running tests outside the final production image, ensure `LD_LIBRARY_PATH` includes:
+1. `/work/mp-out/lib` (for `libmp_runtime.so`)
+2. `/usr/local/cuda/lib64` (for CUDA)
+3. `/opt/gstreamer/lib/x86_64-linux-gnu` (for the correct GStreamer 1.28.0 libraries)
+
+### Performance & Cache
+TensorRT engines are cached as `.engine_smXX_fp16` files. If you modify the ONNX models or tensor layouts, **delete these files** from your host directory before the next run to force a clean reconstruction by the TensorRT builder.
+
+

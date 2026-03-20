@@ -1,15 +1,5 @@
 # Dockerfile.gpu
 # Builds the GPU-accelerated mozza_mp_gpu plugin using TensorRT + CUDA.
-# This is separate from the main Dockerfile to keep the CPU build unchanged.
-#
-# Usage:
-#   docker build -f Dockerfile.gpu -t mp_plugins_gpu .
-#   # Extract artifacts:
-#   docker run --rm mp_plugins_gpu cat /out/plugins/libgstmozzamp_gpu.so > libgstmozzamp_gpu.so
-#
-# Prerequisites:
-#   1. Run convert_models.py to generate ONNX models from face_landmarker.task
-#   2. Place face_detector.onnx and face_landmarks.onnx alongside the .task file
 
 FROM ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 AS builder
 
@@ -23,35 +13,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-numpy libglib2.0-dev \
     libopencv-dev \
     libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dev \
-    # GPU-specific dependencies
     libminizip-dev zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# ── TensorRT (from NVIDIA repos if not in base image) ──
-# The base image already has CUDA 12.2. We need TensorRT dev headers.
-# If TensorRT is not in the base image, uncomment:
-# RUN apt-get update && apt-get install -y --no-install-recommends \
-#     libnvinfer-dev libnvinfer-plugin-dev libnvonnxparsers-dev \
-#  && rm -rf /var/lib/apt/lists/*
-#
-# Alternative: install from NVIDIA's deb repo
+# ── CUDA Toolkit + TensorRT ──
 RUN bash -eux <<'BASH'
-# Check if TensorRT is already installed
-if ! dpkg -l | grep -q libnvinfer-dev; then
-  echo "Installing TensorRT..."
-  # Add NVIDIA repo key and install TRT
-  apt-get update
-  apt-get install -y --no-install-recommends \
-    libnvinfer-dev libnvinfer-plugin-dev libnvonnxparsers-dev || {
-    echo "WARNING: TensorRT not available in default repos."
-    echo "You may need to add NVIDIA's apt repository first."
-    echo "See: https://docs.nvidia.com/deeplearning/tensorrt/install-guide/"
-    exit 1
-  }
-  rm -rf /var/lib/apt/lists/*
-else
-  echo "TensorRT already installed."
+# Add NVIDIA repo
+curl -L -O https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
+dpkg -i cuda-keyring_1.1-1_all.deb
+rm cuda-keyring_1.1-1_all.deb
+apt-get update
+
+# Install CUDA 12.3 components (compatible with 12.2 runtime)
+apt-get install -y --no-install-recommends \
+    cuda-nvcc-12-3 cuda-cudart-dev-12-3 \
+    libnvinfer-dev libnvinfer-plugin-dev libnvonnxparsers-dev
+
+# Ensure /usr/local/cuda points to the installed version
+if [ -d /usr/local/cuda-12.3 ]; then
+  ln -sf /usr/local/cuda-12.3 /usr/local/cuda
 fi
+
+rm -rf /var/lib/apt/lists/*
 BASH
 
 # ── Bazel ──
@@ -59,18 +42,39 @@ RUN curl -fsSL -o /usr/local/bin/bazel \
       https://releases.bazel.build/${BAZEL_VERSION}/release/bazel-${BAZEL_VERSION}-linux-x86_64 \
  && chmod +x /usr/local/bin/bazel
 
-# ── Clone MediaPipe (we build inside this workspace) ──
+# ── Clone MediaPipe ──
 WORKDIR /opt
 RUN git clone --depth=1 --branch ${MEDIAPIPE_TAG} \
       https://github.com/google-ai-edge/mediapipe.git mediapipe-src
 
 WORKDIR /opt/mediapipe-src
 
-# ── Patch EGL (same as CPU build) ──
+# ── Patch WORKSPACE with CUDA repository ──
+RUN cat >> WORKSPACE <<'EOF'
+new_local_repository(
+    name = "cuda",
+    path = "/usr/local/cuda",
+    build_file_content = """
+cc_library(
+    name = "cuda_headers",
+    hdrs = glob(["include/**/*.h", "include/**/*.hpp"]),
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
+cc_library(
+    name = "cudart",
+    srcs = ["lib64/libcudart.so"],
+    visibility = ["//visibility:public"],
+)
+""",
+)
+EOF
+
+# ── Patch EGL ──
 RUN sed -i -E 's/EGL_DEPTH_SIZE,[[:space:]]*16/EGL_DEPTH_SIZE, 0/g' mediapipe/gpu/gl_context_egl.cc && \
     sed -i -E 's/EGL_STENCIL_SIZE,[[:space:]]*8/EGL_STENCIL_SIZE, 0/g' mediapipe/gpu/gl_context_egl.cc
 
-# ── Copy ALL plugin sources (CPU + GPU) ──
+# ── Copy ALL plugin sources ──
 COPY gstfacelandmarks/ gstfacelandmarks/
 COPY gstmozzamp/       gstmozzamp/
 COPY gstshared/        gstshared/
@@ -122,10 +126,10 @@ BASH
 RUN printf '%s\n' \
   'common --experimental_repo_remote_exec' \
   'common --repo_env=HERMETIC_PYTHON_VERSION=3.11' \
+  'build --spawn_strategy=local' \
   'build --define xnn_enable_avxvnniint8=false' \
   'build --cxxopt=-std=gnu++17 --host_cxxopt=-std=gnu++17' \
   'build --cxxopt=-I/usr/include/opencv4' \
-  'build --cxxopt=-I/usr/local/cuda/include' \
   'build --copt=-DMESA_EGL_NO_X11_HEADERS' \
   'build --copt=-DEGL_NO_X11' \
   'build --copt=-DMEDIAPIPE_OMIT_EGL_WINDOW_BIT' \
@@ -133,19 +137,19 @@ RUN printf '%s\n' \
 
 RUN sed -i 's/constexpr int kDelegateFallbackDefaultNumThreads = -1;/constexpr int kDelegateFallbackDefaultNumThreads = 4;/g' mediapipe/calculators/tensor/inference_calculator_cpu.cc || true
 
-# ── Build ALL plugins (CPU + GPU) ──
+# ── Build ALL plugins ──
 RUN set -eux; \
   bazel clean --expunge; \
   bazel build -c opt --copt=-O3 \
     //gstshared:libmp_runtime.so \
     //gstfacelandmarks:libgstfacelandmarks.so \
     //gstmozzamp:libgstmozzamp.so \
-    //gstmozzamp_gpu:libgstmozzamp_gpu.so; \
+    //gstmozzamp_gpu:libgstmozzampgpu.so; \
   bbin="$(bazel info -c opt bazel-bin)"; \
   install -D -m0755 "$bbin/gstshared/libmp_runtime.so"               /out/lib/libmp_runtime.so; \
   install -D -m0755 "$bbin/gstfacelandmarks/libgstfacelandmarks.so" /out/plugins/libgstfacelandmarks.so; \
   install -D -m0755 "$bbin/gstmozzamp/libgstmozzamp.so"             /out/plugins/libgstmozzamp.so; \
-  install -D -m0755 "$bbin/gstmozzamp_gpu/libgstmozzamp_gpu.so"     /out/plugins/libgstmozzamp_gpu.so; \
+  install -D -m0755 "$bbin/gstmozzamp_gpu/libgstmozzampgpu.so"     /out/plugins/libgstmozzamp_gpu.so; \
   export GST_PLUGIN_PATH=/out/plugins:/opt/gstreamer/lib/x86_64-linux-gnu/gstreamer-1.0; \
   export GST_REGISTRY=/tmp/gst-registry.bin; export GST_REGISTRY_FORK=no; \
   GST_DEBUG=GST_PLUGIN_LOADING:3 gst-inspect-1.0 facelandmarks || true; \

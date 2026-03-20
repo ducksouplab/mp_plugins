@@ -16,6 +16,8 @@
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
+#include <vector>
+#include <cstring>
 
 // Maximum control points that fit in shared memory (48KB / (2*8) = 3072)
 // In practice we have ~80 points max, so this is very comfortable.
@@ -33,7 +35,9 @@ __global__ void mls_rigid_delta_kernel(
     int tarW, int tarH,
     int gridSize,
     float alpha_param,
-    float ratio)       // pre-scale ratio (1.0 if disabled)
+    float ratio,
+    int rx, int ry,
+    int gridW, int gridH)       // pre-scale ratio (1.0 if disabled)
 {
   // Load control points into shared memory
   __shared__ float s_oldX[MAX_CTRL_POINTS];
@@ -56,16 +60,12 @@ __global__ void mls_rigid_delta_kernel(
   int gi = blockIdx.x * blockDim.x + threadIdx.x;  // x coord in grid space
   int gj = blockIdx.y * blockDim.y + threadIdx.y;  // y coord in grid space
 
-  // Map grid index to pixel coordinate (matching CPU loop logic)
-  // CPU does: for (i = 0;; i += gridSize) with clamping to tarW-1
-  int i = gi * gridSize;
-  int j = gj * gridSize;
-
-  // Total grid dimensions
-  int gridW = (tarW + gridSize - 1) / gridSize + 1;
-  int gridH = (tarH + gridSize - 1) / gridSize + 1;
-
   if (gi >= gridW || gj >= gridH) return;
+
+  // Map grid index to pixel coordinate (matching CPU loop logic)
+  // i and j are absolute coordinates in the image.
+  int i = rx + gi * gridSize;
+  int j = ry + gj * gridSize;
 
   // Clamp to image bounds (matches CPU edge handling)
   if (i >= tarW) i = tarW - 1;
@@ -75,30 +75,22 @@ __global__ void mls_rigid_delta_kernel(
   float sw = 0.0f;
   float swpx = 0.0f, swpy = 0.0f;
   float swqx = 0.0f, swqy = 0.0f;
-  float newPx = 0.0f, newPy = 0.0f;
 
   int exact_k = -1;
 
-  float w[MAX_CTRL_POINTS];
-
+  // 1. Loop 1: Compute sw, swpx, swpy, swqx, swqy
   for (int k = 0; k < nPoint; ++k) {
     float dx = (float)i - s_oldX[k];
     float dy = (float)j - s_oldY[k];
     float d2 = dx * dx + dy * dy;
 
-    if (d2 < 1e-10f) {
+    if (d2 < 1e-4f) { // Increased threshold for stability
       exact_k = k;
       break;
     }
 
-    float wk;
-    if (alpha_param == 1.0f) {
-      wk = 1.0f / d2;
-    } else {
-      wk = powf(d2, -alpha_param);
-    }
+    float wk = (alpha_param == 1.0f) ? 1.0f / d2 : powf(d2, -alpha_param);
 
-    w[k] = wk;
     sw += wk;
     swpx += wk * s_oldX[k];
     swpy += wk * s_oldY[k];
@@ -106,69 +98,67 @@ __global__ void mls_rigid_delta_kernel(
     swqy += wk * s_newY[k];
   }
 
+  float newPx = 0.0f, newPy = 0.0f;
+
   if (exact_k >= 0) {
     // Exactly on a control point
     newPx = s_newX[exact_k];
     newPy = s_newY[exact_k];
   } else {
+    // 2. Compute pstar, qstar from those sums
     float inv_sw = 1.0f / sw;
     float pstarx = swpx * inv_sw;
     float pstary = swpy * inv_sw;
     float qstarx = swqx * inv_sw;
     float qstary = swqy * inv_sw;
 
-    // Compute miu_r
+    // 3. Loop 2: Compute s1, s2 (for miu_r) and sumTmpPx, sumTmpPy using pstar, qstar
     float s1 = 0.0f, s2 = 0.0f;
+    float sumTmpPx = 0.0f, sumTmpPy = 0.0f;
+
+    float curVx = (float)i - pstarx;
+    float curVy = (float)j - pstary;
+    float curVJx = -curVy;
+    float curVJy = curVx;
+
     for (int k = 0; k < nPoint; ++k) {
+      float dx = (float)i - s_oldX[k];
+      float dy = (float)j - s_oldY[k];
+      float d2 = dx * dx + dy * dy;
+      
+      float wk = (alpha_param == 1.0f) ? 1.0f / (d2 + 1e-6f) : powf(d2 + 1e-6f, -alpha_param);
+
       float Pix = s_oldX[k] - pstarx;
       float Piy = s_oldY[k] - pstary;
       float PiJx = -Piy;
       float PiJy = Pix;
+
       float Qix = s_newX[k] - qstarx;
       float Qiy = s_newY[k] - qstary;
 
-      // dot(Qi, Pi) and dot(Qi, PiJ)
-      s1 += w[k] * (Qix * Pix + Qiy * Piy);
-      s2 += w[k] * (Qix * PiJx + Qiy * PiJy);
+      s1 += wk * (Qix * Pix + Qiy * Piy);
+      s2 += wk * (Qix * PiJx + Qiy * PiJy);
+
+      float PidotcurV = Pix * curVx + Piy * curVy;
+      float PiJdotcurV = PiJx * curVx + PiJy * curVy;
+      float PidotcurVJ = Pix * curVJx + Piy * curVJy;
+      float PiJdotcurVJ = PiJx * curVJx + PiJy * curVJy;
+
+      float tmpPx = PidotcurV * s_newX[k] - PiJdotcurV * s_newY[k];
+      float tmpPy = -PidotcurVJ * s_newX[k] + PiJdotcurVJ * s_newY[k];
+
+      sumTmpPx += wk * tmpPx;
+      sumTmpPy += wk * tmpPy;
     }
 
     float miu_r = sqrtf(s1 * s1 + s2 * s2);
 
-    if (miu_r < 1e-12f) {
-      // Degenerate: use qstar directly
+    if (miu_r < 1e-8f) { // Increased threshold
       newPx = qstarx;
       newPy = qstary;
     } else {
-      float curVx = (float)i - pstarx;
-      float curVy = (float)j - pstary;
-      float curVJx = -curVy;
-      float curVJy = curVx;
-
-      newPx = 0.0f;
-      newPy = 0.0f;
-
-      for (int k = 0; k < nPoint; ++k) {
-        float Pix = s_oldX[k] - pstarx;
-        float Piy = s_oldY[k] - pstary;
-        float PiJx = -Piy;
-        float PiJy = Pix;
-
-        // dot products
-        float PidotcurV = Pix * curVx + Piy * curVy;
-        float PiJdotcurV = PiJx * curVx + PiJy * curVy;
-        float PidotcurVJ = Pix * curVJx + Piy * curVJy;
-        float PiJdotcurVJ = PiJx * curVJx + PiJy * curVJy;
-
-        float tmpPx = PidotcurV * s_newX[k] - PiJdotcurV * s_newY[k];
-        float tmpPy = -PidotcurVJ * s_newX[k] + PiJdotcurVJ * s_newY[k];
-
-        float factor = w[k] / miu_r;
-        newPx += tmpPx * factor;
-        newPy += tmpPy * factor;
-      }
-
-      newPx += qstarx;
-      newPy += qstary;
+      newPx = sumTmpPx / miu_r + qstarx;
+      newPy = sumTmpPy / miu_r + qstary;
     }
   }
 
@@ -194,23 +184,28 @@ __global__ void mls_warp_kernel(
     int srcPitch, int dstPitch,
     int gridSize,
     int gridW, int gridH,
-    float transRatio)
+    float transRatio,
+    int rx, int ry,
+    int rw, int rh)
 {
-  int x = blockIdx.x * blockDim.x + threadIdx.x;
-  int y = blockIdx.y * blockDim.y + threadIdx.y;
-  if (x >= W || y >= H) return;
+  int lx = blockIdx.x * blockDim.x + threadIdx.x;
+  int ly = blockIdx.y * blockDim.y + threadIdx.y;
+  if (lx >= rw || ly >= rh) return;
 
-  // Find enclosing grid cell
-  int gi = x / gridSize;
-  int gj = y / gridSize;
+  int x = rx + lx;
+  int y = ry + ly;
+
+  // Find enclosing grid cell relative to ROI
+  int gi = lx / gridSize;
+  int gj = ly / gridSize;
   int gi1 = min(gi + 1, gridW - 1);
   int gj1 = min(gj + 1, gridH - 1);
 
   // Local position within cell [0, 1)
-  float cellW = (gi1 > gi) ? (float)(min((gi + 1) * gridSize, W - 1) - gi * gridSize) : 1.0f;
-  float cellH = (gj1 > gj) ? (float)(min((gj + 1) * gridSize, H - 1) - gj * gridSize) : 1.0f;
-  float fx = (float)(x - gi * gridSize) / fmaxf(cellW, 1.0f);
-  float fy = (float)(y - gj * gridSize) / fmaxf(cellH, 1.0f);
+  float cellW = (gi1 > gi) ? (float)(min((gi + 1) * gridSize, rw - 1) - gi * gridSize) : 1.0f;
+  float cellH = (gj1 > gj) ? (float)(min((gj + 1) * gridSize, rh - 1) - gj * gridSize) : 1.0f;
+  float fx = (float)(lx - gi * gridSize) / fmaxf(cellW, 1.0f);
+  float fy = (float)(ly - gj * gridSize) / fmaxf(cellH, 1.0f);
 
   // Bilinear interpolation of displacement field
   float dx00 = d_rDx[gj * gridW + gi];
@@ -266,8 +261,8 @@ CudaMlsWarp::CudaMlsWarp(const CudaMlsWarpConfig& cfg) : cfg_(cfg) {}
 CudaMlsWarp::~CudaMlsWarp() {
   if (d_rDx_) cudaFree(d_rDx_);
   if (d_rDy_) cudaFree(d_rDy_);
-  if (d_srcPts_) cudaFree(d_srcPts_);
-  if (d_dstPts_) cudaFree(d_dstPts_);
+  if (d_oldPts_) cudaFree(d_oldPts_);
+  if (d_newPts_) cudaFree(d_newPts_);
 }
 
 void CudaMlsWarp::setConfig(const CudaMlsWarpConfig& cfg) { cfg_ = cfg; }
@@ -283,10 +278,10 @@ void CudaMlsWarp::ensureBuffers(int gridW, int gridH, int nPoints) {
     alloc_grid_h_ = gridH;
   }
   if (nPoints > max_points_) {
-    if (d_srcPts_) cudaFree(d_srcPts_);
-    if (d_dstPts_) cudaFree(d_dstPts_);
-    cudaMalloc(&d_srcPts_, nPoints * 2 * sizeof(float));
-    cudaMalloc(&d_dstPts_, nPoints * 2 * sizeof(float));
+    if (d_oldPts_) cudaFree(d_oldPts_);
+    if (d_newPts_) cudaFree(d_newPts_);
+    cudaMalloc(&d_oldPts_, nPoints * 2 * sizeof(float));
+    cudaMalloc(&d_newPts_, nPoints * 2 * sizeof(float));
     max_points_ = nPoints;
   }
 }
@@ -294,7 +289,8 @@ void CudaMlsWarp::ensureBuffers(int gridW, int gridH, int nPoints) {
 void CudaMlsWarp::warp(const uint8_t* d_src_rgba, uint8_t* d_dst_rgba,
                         int width, int height, int srcPitch, int dstPitch,
                         const float* h_src_pts_xy, const float* h_dst_pts_xy,
-                        int nPoints, cudaStream_t stream) {
+                        int nPoints, int rx, int ry, int rw, int rh,
+                        cudaStream_t stream) {
   if (nPoints < 2) {
     // No meaningful warp possible; copy src to dst
     cudaMemcpy2DAsync(d_dst_rgba, dstPitch, d_src_rgba, srcPitch, width * 4,
@@ -303,20 +299,18 @@ void CudaMlsWarp::warp(const uint8_t* d_src_rgba, uint8_t* d_dst_rgba,
   }
 
   int gridSize = cfg_.gridSize;
-  int gridW = (width + gridSize - 1) / gridSize + 1;
-  int gridH = (height + gridSize - 1) / gridSize + 1;
+  int gridW = (rw + gridSize - 1) / gridSize + 1;
+  int gridH = (rh + gridSize - 1) / gridSize + 1;
 
   ensureBuffers(gridW, gridH, nPoints);
 
   // Pre-scale: compute area ratio (matching CPU behavior)
   float ratio = 1.0f;
   // Temporary host copies for pre-scaling
-  std::vector<float> h_old(nPoints * 2);  // dst points
-  std::vector<float> h_new(nPoints * 2);  // src points
+  std::vector<float> h_old(nPoints * 2);  // dst points (targets)
+  std::vector<float> h_new(nPoints * 2);  // src points (landmarks)
 
-  // In MLS naming: "old" = destination (where to warp TO), "new" = source (current)
-  // But in our API: src_pts = current positions, dst_pts = target positions
-  // So: old = dst, new = src (matching the CPU library convention)
+  // old = destination (where to warp TO), new = source (where the landmarks ARE)
   std::memcpy(h_old.data(), h_dst_pts_xy, nPoints * 2 * sizeof(float));
   std::memcpy(h_new.data(), h_src_pts_xy, nPoints * 2 * sizeof(float));
 
@@ -350,10 +344,10 @@ void CudaMlsWarp::warp(const uint8_t* d_src_rgba, uint8_t* d_dst_rgba,
     }
   }
 
-  // Upload control points to GPU
-  cudaMemcpyAsync(d_srcPts_, h_old.data(), nPoints * 2 * sizeof(float),
+  // Upload control points to GPU: d_oldPts_ gets targets, d_newPts_ gets landmarks
+  cudaMemcpyAsync(d_oldPts_, h_old.data(), nPoints * 2 * sizeof(float),
                   cudaMemcpyHostToDevice, stream);
-  cudaMemcpyAsync(d_dstPts_, h_new.data(), nPoints * 2 * sizeof(float),
+  cudaMemcpyAsync(d_newPts_, h_new.data(), nPoints * 2 * sizeof(float),
                   cudaMemcpyHostToDevice, stream);
 
   // Kernel 1: Compute displacement field
@@ -362,17 +356,17 @@ void CudaMlsWarp::warp(const uint8_t* d_src_rgba, uint8_t* d_dst_rgba,
     dim3 grid((gridW + block.x - 1) / block.x,
               (gridH + block.y - 1) / block.y);
     mls_rigid_delta_kernel<<<grid, block, 0, stream>>>(
-        d_rDx_, d_rDy_, d_srcPts_, d_dstPts_, nPoints, width, height,
-        gridSize, cfg_.alpha, ratio);
+        d_rDx_, d_rDy_, d_oldPts_, d_newPts_, nPoints, width, height,
+        gridSize, cfg_.alpha, ratio, rx, ry, gridW, gridH);
   }
 
   // Kernel 2: Apply warp (bilinear interp of displacement + texture sampling)
   {
     dim3 block(16, 16);
-    dim3 grid((width + block.x - 1) / block.x,
-              (height + block.y - 1) / block.y);
+    dim3 grid((rw + block.x - 1) / block.x,
+              (rh + block.y - 1) / block.y);
     mls_warp_kernel<<<grid, block, 0, stream>>>(
         d_src_rgba, d_dst_rgba, d_rDx_, d_rDy_, width, height, srcPitch,
-        dstPitch, gridSize, gridW, gridH, 1.0f);
+        dstPitch, gridSize, gridW, gridH, 1.0f, rx, ry, rw, rh);
   }
 }

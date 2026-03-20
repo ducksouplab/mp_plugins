@@ -32,7 +32,6 @@ struct _GstFaceLandmarks {
   gboolean draw;
   gint     radius;
   guint    color_rgba; // 0xRRGGBBAA
-  gchar*   delegate;   // execution delegate (cpu/gpu)
   gint     num_threads;
 
   MpFaceCtx* mp_ctx;   // opaque runtime context
@@ -47,7 +46,6 @@ enum {
   PROP_DRAW,
   PROP_RADIUS,
   PROP_COLOR,
-  PROP_DELEGATE,
   PROP_NUM_THREADS
 };
 
@@ -124,10 +122,6 @@ static void gst_face_landmarks_set_property(GObject* obj, guint prop_id,
     case PROP_DRAW:      self->draw       = g_value_get_boolean(value);          break;
     case PROP_RADIUS:    self->radius     = std::max(1, g_value_get_int(value)); break;
     case PROP_COLOR:     self->color_rgba = g_value_get_uint(value);             break;
-    case PROP_DELEGATE:
-      g_free(self->delegate);
-      self->delegate = g_value_dup_string(value);
-      break;
     case PROP_NUM_THREADS: self->num_threads = g_value_get_int(value); break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
   }
@@ -142,7 +136,6 @@ static void gst_face_landmarks_get_property(GObject* obj, guint prop_id,
     case PROP_DRAW:       g_value_set_boolean(value, self->draw);         break;
     case PROP_RADIUS:     g_value_set_int    (value, self->radius);       break;
     case PROP_COLOR:      g_value_set_uint   (value, self->color_rgba);   break;
-    case PROP_DELEGATE:   g_value_set_string (value, self->delegate);     break;
     case PROP_NUM_THREADS:g_value_set_int    (value, self->num_threads);  break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
   }
@@ -168,7 +161,7 @@ static gboolean gst_face_landmarks_start(GstBaseTransform* base) {
   opts.with_blendshapes= 0;
   opts.with_geometry   = 0;
   opts.num_threads     = self->num_threads;
-  opts.delegate        = self->delegate;    // e.g. "cpu" or "gpu"
+  opts.delegate        = "cpu";
 
   if (MpApi().face_create(&opts, &self->mp_ctx) != 0 || !self->mp_ctx) {
     const char* loader_err = mp_runtime_loader::last_error();
@@ -259,11 +252,6 @@ static void gst_face_landmarks_class_init(GstFaceLandmarksClass* klass) {
                         "Packed RGBA color for landmarks",
                         0, G_MAXUINT, 0x00FF00FFu, G_PARAM_READWRITE));
   g_object_class_install_property(
-      gobject_class, PROP_DELEGATE,
-      g_param_spec_string("delegate", "Execution delegate",
-                          "Runtime execution delegate (cpu, gpu, xnnpack)",
-                          "cpu", G_PARAM_READWRITE));
-  g_object_class_install_property(
       gobject_class, PROP_NUM_THREADS,
       g_param_spec_int("threads", "Number of threads",
                        "Number of CPU threads for MediaPipe (0=default)",
@@ -292,7 +280,6 @@ static void gst_face_landmarks_init(GstFaceLandmarks* self) {
   self->draw       = TRUE;
   self->radius     = 2;
   self->color_rgba = 0x00FF00FFu;
-  self->delegate   = g_strdup("cpu");
   self->num_threads = 4;
   self->mp_ctx     = nullptr;
 }
@@ -300,7 +287,6 @@ static void gst_face_landmarks_init(GstFaceLandmarks* self) {
 static void gst_face_landmarks_finalize(GObject* object) {
   auto* self = GST_FACE_LANDMARKS(object);
   g_clear_pointer(&self->model_path, g_free);
-  g_clear_pointer(&self->delegate,   g_free);
   G_OBJECT_CLASS(gst_face_landmarks_parent_class)->finalize(object);
 }
 

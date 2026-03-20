@@ -71,12 +71,12 @@ struct _GstMozzaMp {
   gboolean overlay;
   gboolean drop;
   gboolean show_landmarks;
+  gboolean no_warp;
   gboolean strict_dfm;
   gboolean force_rgb;       // no-op (pads are RGBA)
   gboolean ignore_ts;
   guint    log_every;
   gchar* user_id;         // accepted but not used
-  gchar* delegate;        // execution delegate (cpu/gpu)
   gint     num_threads;
   gint     max_faces;
   gint     lm_radius;
@@ -112,11 +112,11 @@ enum {
   PROP_USER_ID,
   PROP_DFM_ALIAS,        // alias for "deform"
   PROP_SHOW_LANDMARKS,
+  PROP_NO_WARP,
   PROP_STRICT_DFM,
   PROP_FORCE_RGB,        // NEW
   PROP_IGNORE_TS,        // NEW
   PROP_LOG_EVERY,        // NEW
-  PROP_DELEGATE,
   PROP_NUM_THREADS,
   PROP_MAX_FACES,
   PROP_LM_RADIUS,
@@ -266,6 +266,10 @@ static void gst_mozza_mp_set_property(GObject* obj, guint prop_id,
       self->show_landmarks = g_value_get_boolean(value);
       GST_INFO_OBJECT(self, "prop:show-landmarks = %s", self->show_landmarks ? "true" : "false");
       break;
+    case PROP_NO_WARP:
+      self->no_warp = g_value_get_boolean(value);
+      GST_INFO_OBJECT(self, "prop:no-warp = %s", self->no_warp ? "true" : "false");
+      break;
     case PROP_STRICT_DFM:
       self->strict_dfm = g_value_get_boolean(value);
       GST_INFO_OBJECT(self, "prop:strict-dfm = %s", self->strict_dfm ? "true" : "false");
@@ -281,11 +285,6 @@ static void gst_mozza_mp_set_property(GObject* obj, guint prop_id,
     case PROP_LOG_EVERY:
       self->log_every = g_value_get_uint(value);
       GST_INFO_OBJECT(self, "prop:log-every = %u", self->log_every);
-      break;
-    case PROP_DELEGATE:
-      g_free(self->delegate);
-      self->delegate = g_value_dup_string(value);
-      GST_INFO_OBJECT(self, "prop:delegate = %s", self->delegate ? self->delegate : "(null)");
       break;
     case PROP_NUM_THREADS:
       self->num_threads = g_value_get_int(value);
@@ -328,11 +327,10 @@ static void gst_mozza_mp_get_property(GObject* obj, guint prop_id,
     case PROP_OVERLAY:         g_value_set_boolean(value, self->overlay);     break;
     case PROP_DROP:            g_value_set_boolean(value, self->drop);        break;
     case PROP_SHOW_LANDMARKS:  g_value_set_boolean(value, self->show_landmarks); break;
-    case PROP_STRICT_DFM:      g_value_set_boolean(value, self->strict_dfm);     break;
+    case PROP_NO_WARP:         g_value_set_boolean(value, self->no_warp);        break;
     case PROP_FORCE_RGB:       g_value_set_boolean(value, self->force_rgb);      break;
     case PROP_IGNORE_TS:       g_value_set_boolean(value, self->ignore_ts);      break;
     case PROP_LOG_EVERY:       g_value_set_uint   (value, self->log_every);      break;
-    case PROP_DELEGATE:        g_value_set_string (value, self->delegate);       break;
     case PROP_NUM_THREADS:     g_value_set_int    (value, self->num_threads);     break;
     case PROP_MAX_FACES:       g_value_set_int    (value, self->max_faces);       break;
     case PROP_LM_RADIUS:       g_value_set_int    (value, self->lm_radius);       break;
@@ -374,7 +372,7 @@ static gboolean gst_mozza_mp_start(GstBaseTransform* base) {
   opts.with_blendshapes = 0;
   opts.with_geometry    = 0;
   opts.num_threads      = self->num_threads;
-  opts.delegate         = self->delegate;  // e.g. "cpu" or "gpu"
+  opts.delegate         = "cpu";
 
   self->mp_ctx = nullptr;
   auto t0 = std::chrono::steady_clock::now();
@@ -419,7 +417,6 @@ static void gst_mozza_mp_finalize(GObject* object) {
   g_clear_pointer(&self->model_path,  g_free);
   g_clear_pointer(&self->deform_path, g_free);
   g_clear_pointer(&self->user_id,     g_free);
-  g_clear_pointer(&self->delegate,    g_free);
   G_OBJECT_CLASS(gst_mozza_mp_parent_class)->finalize(object);
 }
 
@@ -455,7 +452,40 @@ static double mean_abs_rgb_diff(const cv::Mat& a, const cv::Mat& b) {
 
 static bool env_flag(const char* name) { const char* s = std::getenv(name); return s && *s && s[0] != '0'; }
 
-static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf, GstVideoFrame* f) {
+static void overlay_landmarks(uint8_t* data, int W, int H, int stride,
+                              const std::vector<cv::Point2f>& L,
+                              int radius, uint32_t rgba) {
+  const uint8_t R = (rgba >> 24) & 0xFF;
+  const uint8_t G = (rgba >> 16) & 0xFF;
+  const uint8_t B = (rgba >>  8) & 0xFF;
+  const uint8_t A = (rgba >>  0) & 0xFF;
+
+  for (const auto& p : L) {
+    int cx = (int)p.x;
+    int cy = (int)p.y;
+    const int x0 = std::max(0, cx - radius), x1 = std::min(W - 1, cx + radius);
+    const int y0 = std::max(0, cy - radius), y1 = std::min(H - 1, cy + radius);
+    const int r2 = radius * radius;
+
+    for (int y = y0; y <= y1; ++y) {
+      uint8_t* row = data + y * stride;
+      for (int x = x0; x <= x1; ++x) {
+        if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
+          uint8_t* pix = row + x * 4;
+          const uint16_t ai = A;
+          pix[0] = static_cast<uint8_t>((pix[0] * (255 - ai) + R * ai) / 255);
+          pix[1] = static_cast<uint8_t>((pix[1] * (255 - ai) + G * ai) / 255);
+          pix[2] = static_cast<uint8_t>((pix[2] * (255 - ai) + B * ai) / 255);
+          pix[3] = std::max<uint8_t>(pix[3], A);
+        }
+      }
+    }
+  }
+}
+
+static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
+                                                    GstVideoFrame* f) {
+
   auto* self = GST_MOZZA_MP(vf);
   if (!self->mp_ctx) return GST_FLOW_OK;
 
@@ -476,29 +506,30 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf, GstVide
   img.stride = stride;
   img.format = MP_IMAGE_RGBA8888;
 
-  const GstClockTime pts = GST_BUFFER_PTS(f->buffer);
+  GstClockTime pts = GST_BUFFER_PTS(f->buffer);
   int64_t ts_us;
-
-  if (self->ignore_ts || pts == GST_CLOCK_TIME_NONE) {
-      // 30 FPS strict timeline
+  if (self->ignore_ts) {
       ts_us = (int64_t)self->frame_count * 33333LL;
   } else {
       ts_us = (int64_t)GST_TIME_AS_USECONDS(pts);
   }
 
-  // --- DIAGNOSTICS: Check if MediaPipe Tracker is resetting ---
   if (self->frame_count <= 5) {
-      GST_INFO_OBJECT(self, "FRAME %llu TRACKER DIAGNOSTIC | pts: %" GST_TIME_FORMAT " | synthetic ts_us: %lld | ts_ms sent to MP: %lld",
-                      (unsigned long long)self->frame_count, GST_TIME_ARGS(pts), (long long)ts_us, (long long)(ts_us / 1000));
+    GST_INFO_OBJECT(self, "FRAME %llu TRACKER DIAGNOSTIC | pts: %" GST_TIME_FORMAT " | synthetic ts_us: %lld | ts_ms sent to MP: %lld",
+                    (unsigned long long)self->frame_count, GST_TIME_ARGS(pts), (long long)ts_us, (long long)(ts_us / 1000));
   }
 
-  MpFaceResult out{};
-  const auto t0 = std::chrono::steady_clock::now();
-  const int rc = MpApi().face_detect(self->mp_ctx, &img, ts_us, &out);
-  const auto t1 = std::chrono::steady_clock::now();
-  const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+  auto t0 = std::chrono::steady_clock::now();
+  MpFaceResult out;
+  int rc = MpApi().face_detect(self->mp_ctx, &img, ts_us, &out);
+  auto t1 = std::chrono::steady_clock::now();
+  auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
-  auto should_log = [&](guint64 frame) -> bool { return (self->log_every > 0) && ((frame % self->log_every) == 1); };
+  auto should_log = [&](guint64 frame) -> bool {
+    if (self->log_every == 0) return false;
+    if (self->log_every == 1) return true;
+    return (frame % self->log_every) == 1;
+  };
 
   if (rc != 0) { MpApi().face_free_result(&out); return GST_FLOW_OK; }
 
@@ -517,27 +548,55 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf, GstVide
   std::vector<cv::Point2f> L; L.reserve(f0.landmarks_count);
   for (int i = 0; i < f0.landmarks_count; ++i) L.emplace_back(f0.landmarks[i].x * W, f0.landmarks[i].y * H);
 
-  if (self->dfm) {
-    if (!self->mls) { MpApi().face_free_result(&out); return GST_FLOW_OK; }
+  // Export landmarks for comparison/validation
+  if (const char* lm_out = std::getenv("LANDMARK_OUTPUT_FILE")) {
+    if (FILE* lmf = std::fopen(lm_out, "a")) {
+      std::fprintf(lmf, "Frame %llu Face 0:\n", (unsigned long long)self->frame_count);
+      for (const auto& p : L)
+        std::fprintf(lmf, "%.6f,%.6f,0.000000\n", p.x / (float)W, p.y / (float)H);
+      std::fclose(lmf);
+    }
+  }
 
-    std::vector<std::vector<cv::Point2f>> srcGroups, dstGroups;
-    build_groups_from_dfm(*self->dfm, L, self->alpha, srcGroups, dstGroups);
-
-    if (!srcGroups.empty()) {
-      size_t ctrl_pts = 0;
-      for (size_t g = 0; g < srcGroups.size(); ++g) ctrl_pts += srcGroups[g].size();
-
-      if (self->warp_mode == WARP_PER_GROUP_ROI) {
-        for (size_t g = 0; g < srcGroups.size(); ++g) compute_MLS_on_ROI(img_rgba, *self->mls, srcGroups[g], dstGroups[g], self->roi_pad);
-      } else {
-        std::vector<cv::Point2f> src, dst; src.reserve(ctrl_pts + 4); dst.reserve(ctrl_pts + 4);
-        for (size_t g = 0; g < srcGroups.size(); ++g) {
-          src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
-          dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
+  // 4) Warp
+  if (self->dfm && !self->no_warp) {
+    if (self->mls) {
+      std::vector<std::vector<cv::Point2f>> srcGroups, dstGroups;
+      build_groups_from_dfm(*self->dfm, L, self->alpha, srcGroups, dstGroups);
+      if (!srcGroups.empty()) {
+        if (self->warp_mode == WARP_PER_GROUP_ROI) {
+          for (size_t g = 0; g < srcGroups.size(); ++g) compute_MLS_on_ROI(img_rgba, *self->mls, srcGroups[g], dstGroups[g], self->roi_pad);
+        } else {
+          std::vector<cv::Point2f> src, dst;
+          for (size_t g = 0; g < srcGroups.size(); ++g) { src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end()); dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end()); }
+          add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, 2);
+          cv::Mat warped = self->mls->setAllAndGenerate(img_rgba, src, dst, img_rgba.cols, img_rgba.rows);
+          if (!warped.empty()) warped.copyTo(img_rgba);
         }
-        add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, 2);
-        cv::Mat warped = self->mls->setAllAndGenerate(img_rgba, src, dst, img_rgba.cols, img_rgba.rows);
-        if (!warped.empty()) warped.copyTo(img_rgba);
+      }
+    }
+  }
+
+  // Final draw pass: force bright green on raw buffer
+  if (self->show_landmarks) {
+    // DEBUG: Red square top-left
+    for (int y=0; y<50; y++) {
+      for (int x=0; x<50; x++) {
+        uint8_t* p = data + y*stride + x*4;
+        p[0]=255; p[1]=0; p[2]=0; p[3]=255;
+      }
+    }
+    for (const auto& p : L) {
+      int cx = (int)p.x, cy = (int)p.y;
+      int R = 5;
+      for (int dy = -R; dy <= R; dy++) {
+        for (int dx = -R; dx <= R; dx++) {
+          int x = cx + dx, y = cy + dy;
+          if (x >= 0 && x < W && y >= 0 && y < H) {
+            uint8_t* pix = data + y * stride + x * 4;
+            pix[0] = 0; pix[1] = 255; pix[2] = 0; pix[3] = 255; // PURE GREEN
+          }
+        }
       }
     }
   }
@@ -563,11 +622,11 @@ static void gst_mozza_mp_class_init(GstMozzaMpClass* klass) {
   g_object_class_install_property(gobject_class, PROP_OVERLAY, g_param_spec_boolean("overlay", "Debug overlay", "Draw src/dst control points and vectors", FALSE, G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_DROP, g_param_spec_boolean("drop", "Drop on no face", "Drop frames when no face is detected", FALSE, G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_SHOW_LANDMARKS, g_param_spec_boolean("show-landmarks", "Draw landmarks", "Draw all detected landmarks", FALSE, G_PARAM_READWRITE));
+  g_object_class_install_property(gobject_class, PROP_NO_WARP, g_param_spec_boolean("no-warp", "No warp", "Disable warping", FALSE, G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_STRICT_DFM, g_param_spec_boolean("strict-dfm", "Fail when DFM fails to load", "If true and deform path fails, start() fails", FALSE, G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_FORCE_RGB, g_param_spec_boolean("force-rgb", "Accept property for parity", "No-op", FALSE, G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_IGNORE_TS, g_param_spec_boolean("ignore-timestamps", "Force ts=0", "When true, pass 0us as timestamp into the detector", FALSE, G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_LOG_EVERY, g_param_spec_uint("log-every", "Periodic log interval", "Log every N frames", 0, 1000000, 60, G_PARAM_READWRITE));
-  g_object_class_install_property(gobject_class, PROP_DELEGATE, g_param_spec_string("delegate", "Execution delegate", "cpu or gpu", "cpu", G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_NUM_THREADS, g_param_spec_int("threads", "Number of threads", "CPU threads (0=default)", 0, 32, 4, G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_MAX_FACES, g_param_spec_int("max-faces", "Max faces", "Maximum number of faces", 1, 16, 1, G_PARAM_READWRITE));
   g_object_class_install_property(gobject_class, PROP_LM_RADIUS, g_param_spec_int("landmark-radius", "Landmark dot radius", "Radius", 1, 10, 2, G_PARAM_READWRITE));
@@ -597,16 +656,16 @@ static void gst_mozza_mp_init(GstMozzaMp* self) {
   self->overlay        = FALSE;
   self->drop           = FALSE;
   self->show_landmarks = FALSE;
+  self->no_warp        = FALSE;
   self->strict_dfm     = FALSE;
   self->force_rgb      = FALSE;
   self->ignore_ts      = FALSE;
   self->log_every      = 60;
   self->user_id        = nullptr;
-  self->delegate       = g_strdup("cpu");
   self->num_threads     = 4;
   self->max_faces      = 1;
-  self->lm_radius      = 2;
-  self->lm_color       = 0x0066CCFFu; // blue
+  self->lm_radius      = 3;
+  self->lm_color       = 0x00FF00FFu; // green
   self->warp_mode      = WARP_GLOBAL;
   self->roi_pad        = 24;
   self->frame_count    = 0;

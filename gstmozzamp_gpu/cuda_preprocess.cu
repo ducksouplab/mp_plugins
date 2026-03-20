@@ -76,17 +76,17 @@ __global__ void k_rgba_to_rgb_resize_norm(
 }
 
 // Kernel: crop ROI + resize + RGBA->RGB float
-__global__ void k_crop_rgba_to_rgb_resize_norm(
+__global__ void k_warp_affine_rgba_to_rgb_norm(
     const uint8_t* __restrict__ d_src, int srcW, int srcH, int srcPitch,
     float* __restrict__ d_dst, int dstW, int dstH,
-    int roiX, int roiY, int roiW, int roiH, bool chw) {
+    const float* __restrict__ mat, bool chw) {
   int dx = blockIdx.x * blockDim.x + threadIdx.x;
   int dy = blockIdx.y * blockDim.y + threadIdx.y;
   if (dx >= dstW || dy >= dstH) return;
 
-  // Map destination pixel to source ROI coordinate
-  float sx = roiX + ((float)dx + 0.5f) * ((float)roiW / (float)dstW) - 0.5f;
-  float sy = roiY + ((float)dy + 0.5f) * ((float)roiH / (float)dstH) - 0.5f;
+  // Affine transform: sx = m0*dx + m1*dy + m2
+  float sx = mat[0] * (float)dx + mat[1] * (float)dy + mat[2];
+  float sy = mat[3] * (float)dx + mat[4] * (float)dy + mat[5];
 
   float4 px = bilinear_sample_rgba(d_src, srcW, srcH, srcPitch, sx, sy);
 
@@ -119,14 +119,21 @@ void cuda_rgba_to_rgb_resize_normalize(
       d_src_rgba, srcW, srcH, srcPitch, d_dst_rgb, dstW, dstH, chw_layout);
 }
 
-void cuda_crop_rgba_to_rgb_resize_normalize(
+void cuda_warp_affine_rgba_to_rgb_normalize(
     const uint8_t* d_src_rgba, int srcW, int srcH, int srcPitch,
     float* d_dst_rgb, int dstW, int dstH,
-    int roi_x, int roi_y, int roi_w, int roi_h, bool chw_layout,
+    const float* matrix, bool chw_layout,
     cudaStream_t stream) {
+  // matrix is 2x3 on host or device? For simplicity, we assume caller provides device pointer
+  // but if it's host, we need a small copy.
+  float* d_mat;
+  cudaMallocAsync(&d_mat, 6 * sizeof(float), stream);
+  cudaMemcpyAsync(d_mat, matrix, 6 * sizeof(float), cudaMemcpyHostToDevice, stream);
+
   dim3 block(16, 16);
   dim3 grid((dstW + block.x - 1) / block.x, (dstH + block.y - 1) / block.y);
-  k_crop_rgba_to_rgb_resize_norm<<<grid, block, 0, stream>>>(
-      d_src_rgba, srcW, srcH, srcPitch, d_dst_rgb, dstW, dstH, roi_x, roi_y,
-      roi_w, roi_h, chw_layout);
+  k_warp_affine_rgba_to_rgb_norm<<<grid, block, 0, stream>>>(
+      d_src_rgba, srcW, srcH, srcPitch, d_dst_rgb, dstW, dstH, d_mat, chw_layout);
+  
+  cudaFreeAsync(d_mat, stream);
 }

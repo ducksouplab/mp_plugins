@@ -25,10 +25,10 @@ class CudaMlsWarp {
   // h_src_pts, h_dst_pts: control points on HOST memory (float2: x,y in pixels)
   // nPoints: number of control points
   // All GPU work is submitted to the given stream.
-  void warp(const uint8_t* d_src_rgba, uint8_t* d_dst_rgba,
-            int width, int height, int srcPitch, int dstPitch,
-            const float* h_src_pts_xy, const float* h_dst_pts_xy,
-            int nPoints, cudaStream_t stream);
+  void warp(const uint8_t* d_src_rgba, uint8_t* d_dst_rgba, int width, int height,
+            int srcPitch, int dstPitch, const float* h_src_pts_xy,
+            const float* h_dst_pts_xy, int nPoints, int rx, int ry, int rw,
+            int rh, cudaStream_t stream);
 
   // Update config at runtime (e.g., when user changes mls-alpha)
   void setConfig(const CudaMlsWarpConfig& cfg);
@@ -39,8 +39,8 @@ class CudaMlsWarp {
   // Pre-allocated device buffers
   float* d_rDx_ = nullptr;      // Displacement field X (gridH x gridW)
   float* d_rDy_ = nullptr;      // Displacement field Y (gridH x gridW)
-  float* d_srcPts_ = nullptr;   // Control points src (interleaved x,y)
-  float* d_dstPts_ = nullptr;   // Control points dst (interleaved x,y)
+  float* d_oldPts_ = nullptr;   // Control points destination/target (interleaved x,y)
+  float* d_newPts_ = nullptr;   // Control points source/landmarks (interleaved x,y)
   int max_points_ = 0;
   int alloc_grid_w_ = 0;
   int alloc_grid_h_ = 0;

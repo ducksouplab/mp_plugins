@@ -48,6 +48,38 @@ G_BEGIN_DECLS
 G_DECLARE_FINAL_TYPE(GstMozzaMpGpu, gst_mozza_mp_gpu, GST, MOZZA_MP_GPU,
                      GstVideoFilter)
 
+enum WarpMode {
+  WARP_GLOBAL = 0,
+  WARP_PER_GROUP_ROI = 1,
+};
+
+// ── One-Euro Filter for Landmark Smoothing (Matching MediaPipe) ──
+struct OneEuroFilter {
+  float min_cutoff, beta, d_cutoff;
+  bool first_time = true;
+  float x_prev, dx_prev;
+  OneEuroFilter() : min_cutoff(1.0f), beta(0.007f), d_cutoff(1.0f) {}
+  float alpha(float cutoff, float dt) {
+    float r = 2.0f * M_PI * cutoff * dt;
+    return r / (r + 1.0f);
+  }
+  float filter(float x, float dt) {
+    if (first_time) {
+      first_time = false;
+      x_prev = x; dx_prev = 0.0f;
+      return x;
+    }
+    if (dt <= 0) return x_prev;
+    float dx = (x - x_prev) / dt;
+    float edx = alpha(d_cutoff, dt) * dx + (1.0f - alpha(d_cutoff, dt)) * dx_prev;
+    float cutoff = min_cutoff + beta * std::abs(edx);
+    float a = alpha(cutoff, dt);
+    float x_filtered = a * x + (1.0f - a) * x_prev;
+    x_prev = x_filtered; dx_prev = edx;
+    return x_filtered;
+  }
+};
+
 struct _GstMozzaMpGpu {
   GstVideoFilter parent;
 
@@ -64,6 +96,18 @@ struct _GstMozzaMpGpu {
   gchar* user_id;
   gint max_faces;
   gint gpu_id;
+  gboolean show_landmarks;
+  gboolean no_warp;
+  gfloat smooth;
+  gboolean smooth_landmarks;
+  gint warp_mode;
+  gint roi_pad;
+
+  // ── Smoothing state ──
+  bool has_filters;
+  std::vector<OneEuroFilter> filters_x;
+  std::vector<OneEuroFilter> filters_y;
+  GstClockTime prev_pts;
 
   // ── GPU runtime ──
   std::unique_ptr<TrtFaceLandmarker> trt_lm;
@@ -87,6 +131,7 @@ G_END_DECLS
 enum {
   PROP_0,
   PROP_MODEL_PATH,
+  PROP_MODEL_ALIAS,
   PROP_DEFORM_PATH,
   PROP_DFM_ALIAS,
   PROP_ALPHA,
@@ -98,6 +143,12 @@ enum {
   PROP_LOG_EVERY,
   PROP_MAX_FACES,
   PROP_GPU_ID,
+  PROP_SHOW_LANDMARKS,
+  PROP_NO_WARP,
+  PROP_SMOOTH,
+  PROP_SMOOTH_LANDMARKS,
+  PROP_WARP_MODE,
+  PROP_ROI_PAD,
   PROP_USER_ID,
 };
 
@@ -126,6 +177,7 @@ static void gst_mozza_mp_gpu_set_property(GObject* obj, guint prop_id,
   auto* self = GST_MOZZA_MP_GPU(obj);
   switch (prop_id) {
     case PROP_MODEL_PATH:
+    case PROP_MODEL_ALIAS:
       g_free(self->model_path);
       self->model_path = g_value_dup_string(value);
       break;
@@ -175,6 +227,24 @@ static void gst_mozza_mp_gpu_set_property(GObject* obj, guint prop_id,
     case PROP_GPU_ID:
       self->gpu_id = g_value_get_int(value);
       break;
+    case PROP_SHOW_LANDMARKS:
+      self->show_landmarks = g_value_get_boolean(value);
+      break;
+    case PROP_NO_WARP:
+      self->no_warp = g_value_get_boolean(value);
+      break;
+    case PROP_SMOOTH:
+      self->smooth = g_value_get_float(value);
+      break;
+    case PROP_SMOOTH_LANDMARKS:
+      self->smooth_landmarks = g_value_get_boolean(value);
+      break;
+    case PROP_WARP_MODE:
+      self->warp_mode = g_value_get_int(value);
+      break;
+    case PROP_ROI_PAD:
+      self->roi_pad = g_value_get_int(value);
+      break;
     case PROP_USER_ID:
       g_free(self->user_id);
       self->user_id = g_value_dup_string(value);
@@ -221,6 +291,24 @@ static void gst_mozza_mp_gpu_get_property(GObject* obj, guint prop_id,
       break;
     case PROP_GPU_ID:
       g_value_set_int(value, self->gpu_id);
+      break;
+    case PROP_SHOW_LANDMARKS:
+      g_value_set_boolean(value, self->show_landmarks);
+      break;
+    case PROP_NO_WARP:
+      g_value_set_boolean(value, self->no_warp);
+      break;
+    case PROP_SMOOTH:
+      g_value_set_float(value, self->smooth);
+      break;
+    case PROP_SMOOTH_LANDMARKS:
+      g_value_set_boolean(value, self->smooth_landmarks);
+      break;
+    case PROP_WARP_MODE:
+      g_value_set_int(value, self->warp_mode);
+      break;
+    case PROP_ROI_PAD:
+      g_value_set_int(value, self->roi_pad);
       break;
     case PROP_USER_ID:
       g_value_set_string(value, self->user_id);
@@ -374,18 +462,57 @@ static gboolean gst_mozza_mp_gpu_set_info(GstVideoFilter*, GstCaps*,
 
 // ── Frame processing ──
 
+static inline void add_identity_anchors_roi(int rx, int ry, int rw, int rh, int gridSize,
+                                             std::vector<cv::Point2f>& src,
+                                             std::vector<cv::Point2f>& dst) {
+  const int step = std::max(4, gridSize * 2);
+  for (int x = 0; x < rw; x += step) {
+    float fx = (float)rx + x;
+    src.push_back({fx, (float)ry}); dst.push_back(src.back());
+    src.push_back({fx, (float)ry + rh - 1}); dst.push_back(src.back());
+  }
+  for (int y = step; y < rh - step; y += step) {
+    float fy = (float)ry + y;
+    src.push_back({(float)rx, fy}); dst.push_back(src.back());
+    src.push_back({(float)rx + rw - 1, fy}); dst.push_back(src.back());
+  }
+}
+
 static inline void add_identity_anchors(int W, int H,
                                          std::vector<cv::Point2f>& src,
-                                         std::vector<cv::Point2f>& dst,
-                                         int inset = 2) {
-  const float x0 = (float)inset;
-  const float y0 = (float)inset;
-  const float x1 = (float)(W - 1 - inset);
-  const float y1 = (float)(H - 1 - inset);
-  const cv::Point2f corners[4] = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
-  for (int i = 0; i < 4; ++i) {
-    src.push_back(corners[i]);
-    dst.push_back(corners[i]);
+                                         std::vector<cv::Point2f>& dst) {
+  const float inset = 2.0f;
+  const float x0 = inset, y0 = inset;
+  const float x1 = (float)W - 1.0f - inset, y1 = (float)H - 1.0f - inset;
+  const cv::Point2f corners[4] = { {x0, y0}, {x1, y0}, {x1, y1}, {x0, y1} };
+  for (int i = 0; i < 4; ++i) { src.push_back(corners[i]); dst.push_back(corners[i]); }
+}
+
+static inline void put_px(uint8_t* p, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+  const uint8_t dr = p[0], dg = p[1], db = p[2], da = p[3];
+  const uint16_t ai = a;
+  p[0] = static_cast<uint8_t>((dr * (255 - ai) + r * ai) / 255);
+  p[1] = static_cast<uint8_t>((dg * (255 - ai) + g * ai) / 255);
+  p[2] = static_cast<uint8_t>((db * (255 - ai) + b * ai) / 255);
+  p[3] = std::max<uint8_t>(da, a);
+}
+
+static void draw_dot(uint8_t* base, int W, int H, int stride, int cx, int cy,
+                     int radius, uint32_t rgba) {
+  if (radius < 1) radius = 1;
+  const uint8_t R = (rgba >> 24) & 0xFF;
+  const uint8_t G = (rgba >> 16) & 0xFF;
+  const uint8_t B = (rgba >>  8) & 0xFF;
+  const uint8_t A = (rgba >>  0) & 0xFF;
+
+  const int x0 = std::max(0, cx - radius), x1 = std::min(W - 1, cx + radius);
+  const int y0 = std::max(0, cy - radius), y1 = std::min(H - 1, cy + radius);
+
+  for (int y = y0; y <= y1; ++y) {
+    for (int x = x0; x <= x1; ++x) {
+      uint8_t* p = base + y * stride + x * 4;
+      put_px(p, R, G, B, A);
+    }
   }
 }
 
@@ -394,113 +521,148 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
   auto* self = GST_MOZZA_MP_GPU(vf);
   if (!self->trt_lm) return GST_FLOW_OK;
 
-  self->frame_count++;
-
   const int W = GST_VIDEO_FRAME_WIDTH(f);
   const int H = GST_VIDEO_FRAME_HEIGHT(f);
   const int stride = GST_VIDEO_FRAME_PLANE_STRIDE(f, 0);
   auto* data = static_cast<uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(f, 0));
 
   if (!data || W <= 0 || H <= 0) return GST_FLOW_OK;
+  if (!ensure_gpu_buffers(self, W, H)) return GST_FLOW_ERROR;
 
-  // Ensure GPU buffers
-  if (!ensure_gpu_buffers(self, W, H)) {
-    GST_ERROR_OBJECT(self, "Failed to allocate GPU buffers");
-    return GST_FLOW_ERROR;
-  }
+  self->frame_count++;
 
-  auto should_log = [&](guint64 frame) -> bool {
-    return (self->log_every > 0) && ((frame % self->log_every) == 1);
-  };
-
-  // ── Upload CPU frame to GPU ──
-  // (For NVMM path, this would be replaced with direct device pointer access)
   cudaMemcpy2DAsync(self->d_frame_in, self->alloc_pitch, data, stride, W * 4,
                     H, cudaMemcpyHostToDevice, self->cuda_stream);
 
-  // ── Stage 1+2: TRT Face Detection + Landmarks ──
-  auto t0 = std::chrono::steady_clock::now();
   GpuLandmarkResult lm_result =
       self->trt_lm->detect(self->d_frame_in, W, H, self->alloc_pitch,
                            self->cuda_stream);
-  auto t1 = std::chrono::steady_clock::now();
-  auto det_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
   if (lm_result.face_count == 0) {
-    if (self->drop) return GST_BASE_TRANSFORM_FLOW_DROPPED;
-    // No face: download original frame back (it was uploaded)
-    // Actually for in-place, just leave the CPU buffer untouched
-    return GST_FLOW_OK;
+    return self->drop ? GST_BASE_TRANSFORM_FLOW_DROPPED : GST_FLOW_OK;
   }
 
-  if (should_log(self->frame_count)) {
-    GST_INFO_OBJECT(self, "[GPU] faces=%d (detect %.3f ms) frame=%llu",
-                    lm_result.face_count, det_us / 1000.0,
-                    (unsigned long long)self->frame_count);
-  }
-
-  // ── Convert landmarks to pixel coords (CPU, negligible cost) ──
   auto& face = lm_result.faces[0];
   std::vector<cv::Point2f> L;
   L.reserve(478);
-  for (int i = 0; i < 478; ++i) {
-    L.emplace_back(face.landmarks[i * 3 + 0] * W,
-                   face.landmarks[i * 3 + 1] * H);
+
+  GstClockTime pts = GST_BUFFER_PTS(f->buffer);
+  float dt = 1.0f / 30.0f;
+  if (!self->ignore_ts && self->prev_pts != GST_CLOCK_TIME_NONE && pts != GST_CLOCK_TIME_NONE && pts > self->prev_pts) {
+    dt = (float)(pts - self->prev_pts) / (float)GST_SECOND;
+  }
+  self->prev_pts = pts;
+
+  if (!self->has_filters) {
+    self->filters_x.assign(478, OneEuroFilter());
+    self->filters_y.assign(478, OneEuroFilter());
+    float b = 0.001f + (1.0f - self->smooth) * 0.012f; 
+    for(int i=0; i<478; ++i) { self->filters_x[i].beta = b; self->filters_y[i].beta = b; }
+    self->has_filters = true;
   }
 
-  // ── Apply DFM deformation ──
-  if (self->dfm && self->cuda_warp) {
+  for (int i = 0; i < 478; ++i) {
+    // 1. Get mathematically perfect normalized coords
+    float nx = face.landmarks[i * 3 + 0];
+    float ny = face.landmarks[i * 3 + 1];
+
+    // 2. Filter smoothly in normalized space
+    if (self->smooth_landmarks) {
+      nx = self->filters_x[i].filter(nx, dt);
+      ny = self->filters_y[i].filter(ny, dt);
+    }
+
+    // 3. Map directly to screen pixels
+    L.emplace_back(nx * (float)W, ny * (float)H);
+  }
+
+  // Export landmarks for comparison/validation
+  if (const char* lm_out = std::getenv("LANDMARK_OUTPUT_FILE")) {
+    if (FILE* lmf = std::fopen(lm_out, "a")) {
+      std::fprintf(lmf, "Frame %llu Face 0:\n", (unsigned long long)self->frame_count);
+      for (const auto& p : L)
+        std::fprintf(lmf, "%.6f,%.6f,0.000000\n", p.x / (float)W, p.y / (float)H);
+      std::fclose(lmf);
+    }
+  }
+
+  // ── Apply Deformation (MLS Warp) ──
+  if (self->dfm && self->cuda_warp && !self->no_warp) {
     std::vector<std::vector<cv::Point2f>> srcGroups, dstGroups;
     build_groups_from_dfm(*self->dfm, L, self->alpha, srcGroups, dstGroups);
 
     if (!srcGroups.empty()) {
-      // On GPU, always use global warp mode (launching multiple small kernels
-      // is slower than one full-frame warp on GPU)
-      std::vector<cv::Point2f> src, dst;
-      size_t total = 0;
-      for (auto& g : srcGroups) total += g.size();
-      src.reserve(total + 4);
-      dst.reserve(total + 4);
+      if (self->warp_mode == WARP_PER_GROUP_ROI) {
+        cudaMemcpy2DAsync(self->d_frame_out, self->alloc_pitch, self->d_frame_in,
+                          self->alloc_pitch, W * 4, H, cudaMemcpyDeviceToDevice,
+                          self->cuda_stream);
 
-      for (size_t g = 0; g < srcGroups.size(); ++g) {
-        src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
-        dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
+        for (size_t g = 0; g < srcGroups.size(); ++g) {
+          auto& sg = srcGroups[g];
+          auto& dg = dstGroups[g];
+          float minx = (float)W, miny = (float)H, maxx = 0, maxy = 0;
+          for (auto& p : sg) { minx = std::min(minx, p.x); maxx = std::max(maxx, p.x); miny = std::min(miny, p.y); maxy = std::max(maxy, p.y); }
+          for (auto& p : dg) { minx = std::min(minx, p.x); maxx = std::max(maxx, p.x); miny = std::min(miny, p.y); maxy = std::max(maxy, p.y); }
+
+          int rx = std::max(0, (int)minx - self->roi_pad);
+          int ry = std::max(0, (int)miny - self->roi_pad);
+          int rw = std::min(W - rx, (int)(maxx - minx) + 2 * self->roi_pad);
+          int rh = std::min(H - ry, (int)(maxy - miny) + 2 * self->roi_pad);
+          if (rw <= 0 || rh <= 0) continue;
+
+          std::vector<cv::Point2f> src = sg, dst = dg;
+          add_identity_anchors_roi(rx, ry, rw, rh, self->mls_grid, src, dst);
+          int nPts = (int)src.size();
+          std::vector<float> h_src_xy(nPts * 2), h_dst_xy(nPts * 2);
+          for (int i = 0; i < nPts; ++i) {
+            h_src_xy[i * 2 + 0] = src[i].x; h_src_xy[i * 2 + 1] = src[i].y;
+            h_dst_xy[i * 2 + 0] = dst[i].x; h_dst_xy[i * 2 + 1] = dst[i].y;
+          }
+          self->cuda_warp->warp(self->d_frame_in, self->d_frame_out, W, H, self->alloc_pitch, self->alloc_pitch, h_src_xy.data(), h_dst_xy.data(), nPts, rx, ry, rw, rh, self->cuda_stream);
+        }
+      } else {
+        std::vector<cv::Point2f> src, dst;
+        for (size_t g = 0; g < srcGroups.size(); ++g) {
+          src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
+          dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
+        }
+        add_identity_anchors(W, H, src, dst);
+
+        int nPts = (int)src.size();
+        std::vector<float> h_src_xy(nPts * 2), h_dst_xy(nPts * 2);
+        for (int i = 0; i < nPts; ++i) {
+          h_src_xy[i * 2 + 0] = src[i].x; h_src_xy[i * 2 + 1] = src[i].y;
+          h_dst_xy[i * 2 + 0] = dst[i].x; h_dst_xy[i * 2 + 1] = dst[i].y;
+        }
+        self->cuda_warp->warp(self->d_frame_in, self->d_frame_out, W, H, self->alloc_pitch, self->alloc_pitch, h_src_xy.data(), h_dst_xy.data(), nPts, 0, 0, W, H, self->cuda_stream);
       }
-      add_identity_anchors(W, H, src, dst, 2);
 
-      // Convert cv::Point2f to interleaved float arrays for CUDA
-      int nPts = (int)src.size();
-      std::vector<float> h_src_xy(nPts * 2);
-      std::vector<float> h_dst_xy(nPts * 2);
-      for (int i = 0; i < nPts; ++i) {
-        h_src_xy[i * 2 + 0] = src[i].x;
-        h_src_xy[i * 2 + 1] = src[i].y;
-        h_dst_xy[i * 2 + 0] = dst[i].x;
-        h_dst_xy[i * 2 + 1] = dst[i].y;
-      }
-
-      auto t2 = std::chrono::steady_clock::now();
-
-      // CUDA MLS warp: d_frame_in -> d_frame_out
-      self->cuda_warp->warp(self->d_frame_in, self->d_frame_out, W, H,
-                            self->alloc_pitch, self->alloc_pitch,
-                            h_src_xy.data(), h_dst_xy.data(), nPts,
-                            self->cuda_stream);
-
-      // Download warped frame back to CPU buffer
       cudaMemcpy2DAsync(data, stride, self->d_frame_out, self->alloc_pitch,
                         W * 4, H, cudaMemcpyDeviceToHost, self->cuda_stream);
       cudaStreamSynchronize(self->cuda_stream);
+    }
+  }
 
-      auto t3 = std::chrono::steady_clock::now();
-      auto warp_us =
-          std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2)
-              .count();
-
-      if (should_log(self->frame_count)) {
-        GST_INFO_OBJECT(self, "[GPU] warp %.3f ms (%d ctrl pts)",
-                        warp_us / 1000.0, nPts);
+  // ── Draw landmarks exactly identically to the CPU module ──
+  if (self->show_landmarks) {
+    // DEBUG: Red square top-left
+    for (int y = 0; y < 50; y++) {
+      for (int x = 0; x < 50; x++) {
+        uint8_t* p = data + y * stride + x * 4;
+        p[0] = 255; p[1] = 0; p[2] = 0; p[3] = 255;
+      }
+    }
+    for (int i = 0; i < 478; i++) {
+      int cx = (int)L[i].x, cy = (int)L[i].y;
+      int R = 5;
+      for (int dy = -R; dy <= R; dy++) {
+        for (int dx = -R; dx <= R; dx++) {
+          int x = cx + dx, y = cy + dy;
+          if (x >= 0 && x < W && y >= 0 && y < H) {
+            uint8_t* pix = data + y * stride + x * 4;
+            pix[0] = 0; pix[1] = 255; pix[2] = 0; pix[3] = 255; // PURE GREEN
+          }
+        }
       }
     }
   }
@@ -524,10 +686,14 @@ static void gst_mozza_mp_gpu_class_init(GstMozzaMpGpuClass* klass) {
 
   g_object_class_install_property(
       gobject_class, PROP_MODEL_PATH,
-      g_param_spec_string("model", "Model path",
+      g_param_spec_string("model_path", "Model path",
                           "Path to face_landmarker.task (ONNX models must be "
                           "in same directory)",
                           nullptr, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_MODEL_ALIAS,
+      g_param_spec_string("model", "Model path [alias]",
+                          "Alias for 'model_path'", nullptr, G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_DEFORM_PATH,
       g_param_spec_string("deform", "Deformation file (.dfm)",
@@ -576,9 +742,37 @@ static void gst_mozza_mp_gpu_class_init(GstMozzaMpGpuClass* klass) {
                        16, 1, G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_GPU_ID,
-      g_param_spec_int("gpu-id", "GPU ID", "CUDA device index", 0, 15, 0,
+      g_param_spec_int("gpu-id", "GPU device ID", "CUDA device index", 0, 8, 0,
                        G_PARAM_READWRITE));
   g_object_class_install_property(
+      gobject_class, PROP_SHOW_LANDMARKS,
+      g_param_spec_boolean("show-landmarks", "Show landmarks",
+                           "Draw landmarks on frame", FALSE,
+                           G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_NO_WARP,
+      g_param_spec_boolean("no-warp", "No warp",
+                           "Disable warping (landmark debug only)", FALSE,
+                           G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_SMOOTH,
+      g_param_spec_float("smooth", "Smoothing",
+                         "Temporal smoothing factor (0=off, 0.9=max)", 0.0f,
+                         0.99f, 0.5f, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_SMOOTH_LANDMARKS,
+      g_param_spec_boolean("smooth-landmarks", "Smooth Landmarks",
+                           "Apply OneEuroFilter to landmarks", TRUE,
+                           G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_WARP_MODE,
+      g_param_spec_int("warp-mode", "Warp mode", "0=global, 1=per-group-roi", 0, 1, 0, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_ROI_PAD,
+      g_param_spec_int("roi-pad", "ROI padding", "Padding for per-group-roi mode", 0, 128, 24, G_PARAM_READWRITE));
+
+  g_object_class_install_property(
+
       gobject_class, PROP_USER_ID,
       g_param_spec_string("user-id", "User ID", "Opaque user identifier",
                           nullptr, G_PARAM_READWRITE));
@@ -613,6 +807,15 @@ static void gst_mozza_mp_gpu_init(GstMozzaMpGpu* self) {
   self->user_id = nullptr;
   self->max_faces = 1;
   self->gpu_id = 0;
+  self->show_landmarks = FALSE;
+  self->no_warp = FALSE;
+  self->smooth = 0.5f;
+  self->smooth_landmarks = TRUE;
+  self->warp_mode = WARP_GLOBAL;
+  self->roi_pad = 24;
+
+  self->has_filters = false;
+  self->prev_pts = GST_CLOCK_TIME_NONE;
 
   self->cuda_stream = nullptr;
   self->d_frame_in = nullptr;
@@ -628,7 +831,7 @@ static gboolean plugin_init(GstPlugin* plugin) {
                               GST_TYPE_MOZZA_MP_GPU);
 }
 
-GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, mozzampgpu,
+GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, mozzamp_gpu,
                   "GPU-accelerated facial deformation via TensorRT + CUDA",
                   plugin_init, "1.0", "LGPL", "mozza_mp_gpu",
                   "https://ducksouplab.com")

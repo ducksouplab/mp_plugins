@@ -16,11 +16,11 @@ void cuda_rgba_to_rgb_resize_normalize(
     bool chw_layout,  // true=CHW (TRT default), false=HWC
     cudaStream_t stream);
 
-// Crop a ROI from RGBA GPU image, resize to target, convert to RGB float [0,1].
-// roi_x, roi_y, roi_w, roi_h define the crop region.
-void cuda_crop_rgba_to_rgb_resize_normalize(
+// Warp ROI from RGBA GPU image using affine matrix, resize to target, convert to RGB float [0,1].
+// matrix is a 2x3 affine matrix (row-major).
+void cuda_warp_affine_rgba_to_rgb_normalize(
     const uint8_t* d_src_rgba, int srcW, int srcH, int srcPitch,
     float* d_dst_rgb, int dstW, int dstH,
-    int roi_x, int roi_y, int roi_w, int roi_h,
+    const float* matrix, // 2x3
     bool chw_layout,
     cudaStream_t stream);
