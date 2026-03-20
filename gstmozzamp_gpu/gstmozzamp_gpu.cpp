@@ -239,9 +239,22 @@ static void gst_mozza_mp_gpu_set_property(GObject* obj, guint prop_id,
       break;
     case PROP_SMOOTH:
       self->smooth = g_value_get_float(value);
+      if (self->has_filters) {
+        float b = 0.001f + (1.0f - self->smooth) * 0.012f;
+        for (int i = 0; i < 478; ++i) {
+          self->filters_x[i].beta = b;
+          self->filters_y[i].beta = b;
+        }
+      }
       break;
     case PROP_MIN_CUTOFF:
       self->min_cutoff = g_value_get_float(value);
+      if (self->has_filters) {
+        for (int i = 0; i < 478; ++i) {
+          self->filters_x[i].min_cutoff = self->min_cutoff;
+          self->filters_y[i].min_cutoff = self->min_cutoff;
+        }
+      }
       break;
     case PROP_SMOOTH_LANDMARKS:
       self->smooth_landmarks = g_value_get_boolean(value);
@@ -549,6 +562,9 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
                            self->cuda_stream);
 
   if (lm_result.face_count == 0) {
+    // Reset filter state so the filter re-initialises cleanly when the face
+    // reappears, avoiding a snap from stale x_prev/dx_prev values.
+    self->has_filters = false;
     return self->drop ? GST_BASE_TRANSFORM_FLOW_DROPPED : GST_FLOW_OK;
   }
 
@@ -658,15 +674,8 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
     }
   }
 
-  // ── Draw landmarks exactly identically to the CPU module ──
+  // ── Draw landmarks ──
   if (self->show_landmarks) {
-    // DEBUG: Red square top-left
-    for (int y = 0; y < 50; y++) {
-      for (int x = 0; x < 50; x++) {
-        uint8_t* p = data + y * stride + x * 4;
-        p[0] = 255; p[1] = 0; p[2] = 0; p[3] = 255;
-      }
-    }
     for (int i = 0; i < 478; i++) {
       int cx = (int)L[i].x, cy = (int)L[i].y;
       int R = 5;
