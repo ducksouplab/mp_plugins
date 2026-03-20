@@ -157,5 +157,8 @@ RUN set -eux; \
   GST_DEBUG=GST_PLUGIN_LOADING:3 gst-inspect-1.0 mozza_mp_gpu || true
 
 # ── Export artifacts ──
+# Use `--output type=local,dest=mp-out` when building.
+# The trailing slash on /out/ strips the directory name, so artifacts land
+# directly at mp-out/plugins/ and mp-out/lib/ (not mp-out/out/plugins/).
 FROM scratch AS artifacts
-COPY --from=builder /out /out
+COPY --from=builder /out/ .

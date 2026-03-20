@@ -101,6 +101,7 @@ struct _GstMozzaMpGpu {
   gboolean show_landmarks;
   gboolean no_warp;
   gfloat smooth;
+  gfloat min_cutoff;
   gboolean smooth_landmarks;
   gint warp_mode;
   gint roi_pad;
@@ -148,6 +149,7 @@ enum {
   PROP_SHOW_LANDMARKS,
   PROP_NO_WARP,
   PROP_SMOOTH,
+  PROP_MIN_CUTOFF,
   PROP_SMOOTH_LANDMARKS,
   PROP_WARP_MODE,
   PROP_ROI_PAD,
@@ -238,6 +240,9 @@ static void gst_mozza_mp_gpu_set_property(GObject* obj, guint prop_id,
     case PROP_SMOOTH:
       self->smooth = g_value_get_float(value);
       break;
+    case PROP_MIN_CUTOFF:
+      self->min_cutoff = g_value_get_float(value);
+      break;
     case PROP_SMOOTH_LANDMARKS:
       self->smooth_landmarks = g_value_get_boolean(value);
       break;
@@ -302,6 +307,9 @@ static void gst_mozza_mp_gpu_get_property(GObject* obj, guint prop_id,
       break;
     case PROP_SMOOTH:
       g_value_set_float(value, self->smooth);
+      break;
+    case PROP_MIN_CUTOFF:
+      g_value_set_float(value, self->min_cutoff);
       break;
     case PROP_SMOOTH_LANDMARKS:
       g_value_set_boolean(value, self->smooth_landmarks);
@@ -558,8 +566,13 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
   if (!self->has_filters) {
     self->filters_x.assign(478, OneEuroFilter());
     self->filters_y.assign(478, OneEuroFilter());
-    float b = 0.001f + (1.0f - self->smooth) * 0.012f; 
-    for(int i=0; i<478; ++i) { self->filters_x[i].beta = b; self->filters_y[i].beta = b; }
+    float b = 0.001f + (1.0f - self->smooth) * 0.012f;
+    for (int i = 0; i < 478; ++i) {
+      self->filters_x[i].beta = b;
+      self->filters_y[i].beta = b;
+      self->filters_x[i].min_cutoff = self->min_cutoff;
+      self->filters_y[i].min_cutoff = self->min_cutoff;
+    }
     self->has_filters = true;
   }
 
@@ -759,8 +772,13 @@ static void gst_mozza_mp_gpu_class_init(GstMozzaMpGpuClass* klass) {
   g_object_class_install_property(
       gobject_class, PROP_SMOOTH,
       g_param_spec_float("smooth", "Smoothing",
-                         "Temporal smoothing factor (0=off, 0.9=max)", 0.0f,
+                         "Temporal smoothing factor (0=off, 0.9=max). Tunes beta of the OneEuroFilter.", 0.0f,
                          0.99f, 0.5f, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_MIN_CUTOFF,
+      g_param_spec_float("min-cutoff", "Min cutoff frequency",
+                         "OneEuroFilter min_cutoff: lower = more smoothing at rest (less jitter, more lag). Default 0.5 Hz.",
+                         0.001f, 10.0f, 0.5f, G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_SMOOTH_LANDMARKS,
       g_param_spec_boolean("smooth-landmarks", "Smooth Landmarks",
@@ -812,6 +830,7 @@ static void gst_mozza_mp_gpu_init(GstMozzaMpGpu* self) {
   self->show_landmarks = FALSE;
   self->no_warp = FALSE;
   self->smooth = 0.5f;
+  self->min_cutoff = 0.5f;
   self->smooth_landmarks = TRUE;
   self->warp_mode = WARP_GLOBAL;
   self->roi_pad = 24;

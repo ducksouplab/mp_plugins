@@ -16,7 +16,6 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -96,33 +95,6 @@ static bool write_file(const std::string& path, const void* data, size_t sz) {
     }                                                                   \
   } while (0)
 
-// ── One-Euro Filter for Landmark Smoothing (Matching MediaPipe) ──
-struct OneEuroFilter {
-  float min_cutoff, beta, d_cutoff;
-  bool first_time = true;
-  float x_prev, dx_prev;
-  OneEuroFilter() : min_cutoff(1.0f), beta(0.007f), d_cutoff(1.0f) {}
-  float alpha(float cutoff, float dt) {
-    float r = 2.0f * M_PI * cutoff * dt;
-    return r / (r + 1.0f);
-  }
-  float filter(float x, float dt) {
-    if (first_time) {
-      first_time = false;
-      x_prev = x; dx_prev = 0.0f;
-      return x;
-    }
-    if (dt <= 0) return x_prev;
-    float dx = (x - x_prev) / dt;
-    float edx = alpha(d_cutoff, dt) * dx + (1.0f - alpha(d_cutoff, dt)) * dx_prev;
-    float cutoff = min_cutoff + beta * std::abs(edx);
-    float a = alpha(cutoff, dt);
-    float x_filtered = a * x + (1.0f - a) * x_prev;
-    x_prev = x_filtered; dx_prev = edx;
-    return x_filtered;
-  }
-};
-
 // ── Implementation ──
 
 struct TrtFaceLandmarker::Impl {
@@ -163,11 +135,6 @@ struct TrtFaceLandmarker::Impl {
   // ROI smoothing state
   bool has_prev_roi = false;
   float prev_cx = 0.5f, prev_cy = 0.5f, prev_size = 0.5f;
-
-  // Smoothing filters (internally applied to normalized landmarks)
-  OneEuroFilter filters_x[478], filters_y[478];
-  bool has_filters = false;
-  std::chrono::steady_clock::time_point last_time;
 
   Impl() {
     h_det_boxes.resize(896 * 16);
@@ -493,15 +460,6 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
   GpuLandmarkResult result;
   auto& I = *impl_;
 
-  // Calculate dt for OneEuroFilter landmark smoothing
-  float dt = 0.0f;
-  auto now = std::chrono::steady_clock::now();
-  if (I.has_filters) {
-    dt = std::chrono::duration<float>(now - I.last_time).count();
-  }
-  I.last_time = now;
-  I.has_filters = true;
-
   float cx = 0, cy = 0, side = 0, angle = 0;
   bool use_tracking = false;
 
@@ -529,9 +487,10 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
     // Detection uses max(bbox_w,bbox_h)*1.5; with inter-eye-dist≈bbox_w/3, that's ≈ dist*4.0
     side = dist * 4.0f;
 
-    // Clamp crop center so the crop stays within image bounds.
-    // Without this, the CUDA kernel clamps out-of-bounds pixels to the border,
-    // creating repeating rows/columns that corrupt the model input.
+    // Clamp crop size so it never exceeds the frame, then clamp center.
+    // If side > frame dimension, half > dimension/2 and the center clamp
+    // collapses to a degenerate range that always places cx/cy out of bounds.
+    side = std::min(side, (float)std::min(width, height));
     {
       float half = side * 0.5f;
       cx = std::max(half, std::min((float)width  - half, cx));
@@ -572,11 +531,6 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
     if (faces.empty()) {
       I.has_prev_landmarks = false;
       I.has_prev_roi = false;
-      I.has_filters = false;
-      for (int i = 0; i < 478; ++i) {
-        I.filters_x[i].first_time = true;
-        I.filters_y[i].first_time = true;
-      }
       result.face_count = 0;
       return result;
     }
@@ -601,7 +555,8 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
       // Scale from bbox size (face bbox max dim * 1.5)
       side = std::max(det.w * (float)width, det.h * (float)height) * 1.5f;
 
-      // Clamp crop center so the crop stays within image bounds.
+      // Clamp crop size so it never exceeds the frame, then clamp center.
+      side = std::min(side, (float)std::min(width, height));
       {
         float half = side * 0.5f;
         cx = std::max(half, std::min((float)width  - half, cx));
@@ -696,10 +651,35 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
       face_out.landmarks[li * 3 + 2] = lz / (float)I.LM_W; 
     }
 
-    // The landmark model's face-presence score (Identity_1) is not reliable
-    // for our eye-center ROI crop format — it consistently reports low values
-    // even when the landmark positions are accurate. Always use the landmarks
-    // for tracking (only fall back to detection if no previous state exists).
+    // Sanity check: verify that back-projected landmarks span a reasonable
+    // area of the image. The face-presence score (Identity_1) is unreliable
+    // in FP16 for our eye-center crop format (~0.0002 even for good detections).
+    // Instead, check that the landmark bounding box covers at least 5% of the
+    // image in both dimensions — a genuine face bbox should be ~10-40%.
+    // If the check fails, discard this result and force a full re-detection
+    // on the next frame.
+    {
+      float lm_xmin = face_out.landmarks[0], lm_xmax = face_out.landmarks[0];
+      float lm_ymin = face_out.landmarks[1], lm_ymax = face_out.landmarks[1];
+      for (int li = 1; li < 478; ++li) {
+        float lx = face_out.landmarks[li * 3 + 0];
+        float ly = face_out.landmarks[li * 3 + 1];
+        if (lx < lm_xmin) lm_xmin = lx;
+        if (lx > lm_xmax) lm_xmax = lx;
+        if (ly < lm_ymin) lm_ymin = ly;
+        if (ly > lm_ymax) lm_ymax = ly;
+      }
+      float lm_w = lm_xmax - lm_xmin;
+      float lm_h = lm_ymax - lm_ymin;
+      if (lm_w < 0.05f || lm_h < 0.05f) {
+        std::fprintf(stderr, "[TRT] Landmark sanity check failed (bbox %.3fx%.3f) — resetting tracking\n", lm_w, lm_h);
+        I.has_prev_landmarks = false;
+        I.has_prev_roi = false;
+        result.face_count = 0;
+        return result;
+      }
+    }
+
     I.has_prev_landmarks = true;
     for (int li = 0; li < 478; ++li) {
       I.prev_landmarks[li * 3 + 0] = face_out.landmarks[li * 3 + 0];
