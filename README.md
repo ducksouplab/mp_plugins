@@ -6,9 +6,8 @@ This repository contains three lean GStreamer video filters (`facelandmarks`, `m
 - **mozza_mp** (CPU): MediaPipe Face Landmarker + OpenCV MLS warping on CPU.
 - **mozza_mp_gpu** (GPU): TensorRT Face Landmarker + CUDA MLS warping on GPU.
 
-We currently recommend running with `ignore-timestamps=false`.
 - Base image: `ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0`
-- GStreamer plugin base class: **GstVideoFilter** (`transform_frame_ip`).  
+- GStreamer plugin base class: **GstVideoFilter** (`transform_frame_ip`).
 - MediaPipe Face Landmarker uses a `.task` model and `LIVE_STREAM` mode.
 
 Note:
@@ -98,34 +97,48 @@ Groups & warp behavior
 - **Parallelism:** MLS warping is performed directly on the GPU using custom CUDA kernels.
 
 ## Parameters
-The parameters are identical to `mozza_mp`, but the main model flag is renamed for clarity:
+`mozza_mp_gpu` supports the same parameters as `mozza_mp` plus GPU-specific ones:
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model_path`| string | required | Path to `face_landmarker.task`. |
-| `model`     | string | alias    | Alias for `model_path` (for compatibility). |
-| `gpu-id`    | int    | 0        | CUDA device index to use. |
+| `model_path` | string | required | Path to `face_landmarker.task`. Also accepted as `model`. |
+| `deform` | string | none | Path to deformation `.dfm` file. |
+| `alpha` | float [-10..10] | 1.0 | Deformation intensity multiplier. |
+| `mls-alpha` | float | 1.4 | Rigidity parameter for MLS warping. |
+| `mls-grid` | int | 5 | MLS grid size in pixels (smaller = denser). |
+| `warp-mode` | int | 0 | MLS warp strategy: `0`=global, `1`=per-group-roi. |
+| `roi-pad` | int [0..128] | 24 | Padding around group ROI when `warp-mode=1` (pixels). |
+| `no-warp` | boolean | false | Run landmark detection only, skip MLS warping. |
+| `show-landmarks` | boolean | false | Draw all detected landmarks on the frame. |
+| `drop` | boolean | false | Drop frame when no face is detected. |
+| `max-faces` | int | 1 | Maximum number of faces to detect. |
+| `gpu-id` | int | 0 | CUDA device index to use. |
+| `smooth` | float [0..0.99] | 0.5 | Temporal EMA smoothing on ROI (0=off). |
+| `smooth-landmarks` | boolean | true | Apply OneEuroFilter smoothing to landmarks. |
+| `log-every` | uint | 60 | Emit a log message every N frames (0 disables). |
+| `strict-dfm` | boolean | false | Fail to start if a deform file cannot be loaded. |
+| `user-id` | string | none | Accepted but ignored; useful for uniform configs. |
 
 **Crucial Note on Models:**
 Unlike the CPU version, `mozza_mp_gpu` requires **ONNX** files. The `model_path` points to the `.task` file, but the plugin will look in that **same folder** for `face_detector.onnx` and `face_landmarks.onnx`.
 
 ## TensorRT Engine Caching
-The first time you run the plugin on a new machine or a different GPU, TensorRT will spend **20-60 seconds** "optimizing" the model for your specific hardware.
-- This only happens **once**.
-- The result is saved as an `.engine_smXX_fp16` file in the same folder.
-- Subsequent runs will load this engine file in milliseconds.
+The first time you run the plugin on a new machine or GPU, TensorRT will spend **20-60 seconds** building an optimised engine.
+- This only happens **once per GPU architecture**.
+- The engine is cached as `<model>.engine_smXX_fp16` alongside the ONNX files.
+- Subsequent runs load the cache in milliseconds.
+- If you change the ONNX models, delete the `.engine_*` files to force a rebuild.
 
 ## Setup
-1. Extract and convert models:
-   ```bash
-   python3 convert_models.py face_landmarker.task
-   ```
-2. Place the generated `.onnx` files alongside the `.task` file.
+1. Obtain the ONNX models (`face_detector.onnx`, `face_landmarks.onnx`) by converting from the `.task` file.
+2. Place them alongside the `.task` file (same directory).
+3. On first run TensorRT will build and cache an `.engine_smXX_fp16` file (~20-60s). Subsequent runs load the cache instantly.
 
 ## Example
 ```bash
 gst-launch-1.0 -v \
   filesrc location=input.mp4 ! decodebin ! videoconvert ! video/x-raw,format=RGBA ! \
-  mozza_mp_gpu model_path=/models/face_landmarker.task deform=/models/smile.dfm alpha=1.5 ! \
+  mozza_mp_gpu model_path=/models/face_landmarker.task deform=/models/smile.dfm alpha=1.5 warp-mode=1 ! \
   videoconvert ! autovideosink
 ```
 
@@ -147,52 +160,49 @@ Usage example:
 facelandmarks model=/app/plugins/face_landmarker.task threads=6
 ```
 
-# Build the plugins with Docker 
-## Build
+# Build the plugins with Docker
+
+The build is two stages: first compile all plugins (`Dockerfile.gpu`), then assemble the runtime test image (`Dockerfile.test`).
+
+## Step 1 — Build plugins
 ```bash
-docker build -t ducksouplab/mozzamp:latest .
+DOCKER_BUILDKIT=1 docker build --no-cache -f Dockerfile.gpu \
+  --output type=local,dest=mp-out \
+  -t mp_plugins_gpu:fixed .
 ```
 
-This will:
-	1.	Install build deps + GStreamer dev headers (to compile a plugin).
-	2.	Install Bazelisk (recommended Bazel launcher).
-	3.	Clone MediaPipe and build the Face Landmarker C++ target.
-	4.	Export headers/libs into third_party/mediapipe-export.
-	5.	Build libgstfacelandmarks.so with CMake and install it to the system plugin path.
-	6.	Download face_landmarker.task into /opt/models.
-
-## Docker push or pull
-Push or pull docker image:
-
-Push — you need writes to ducksouplab to do this:
+This builds all three plugins using Bazel + TensorRT/CUDA and exports the `.so` files to `mp-out/out/plugins/` and `mp-out/out/lib/`. Copy them to the expected location:
 ```bash
-docker push ducksouplab/mozzamp:latest
+cp mp-out/out/plugins/*.so mp-out/plugins/
+cp mp-out/out/lib/*.so    mp-out/lib/
 ```
 
-Pull :
+## Step 2 — Build the runtime test image
 ```bash
-docker pull ducksouplab/mozzamp:latest
+DOCKER_BUILDKIT=1 docker build -f Dockerfile.test \
+  -t mp_plugins_test:fixed \
+  --build-context mp_plugins_gpu=docker-image://mp_plugins_gpu:fixed .
 ```
 
-## Verify plugin
-```
-docker run --rm -it mozzamp:latest \
-  bash -lc 'gst-inspect-1.0 mozzamp'
-```
-You should see properties: model, max-faces, draw, radius, color, delegate, threads.
+This installs the CUDA/TRT runtime libraries and copies the GPU plugin into a runnable image.
 
-## Get the .task model
+## Verify plugins
+```bash
+docker run --rm \
+  -e GST_PLUGIN_PATH=/plugins \
+  -v "$PWD/mp-out/plugins:/plugins" \
+  ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 \
+  gst-inspect-1.0 mozza_mp
 
-If you haven't:
-```
-chmod +x download_face_landmarker_model.sh
-./download_face_landmarker_model.sh
+docker run --rm --gpus all \
+  mp_plugins_test:fixed \
+  gst-inspect-1.0 mozza_mp_gpu
 ```
 
-## Get the .so files
-```
+## Get the .so files from an existing image
+```bash
 chmod +x get_so_file.sh
-./get_so_file.sh ducksouplab/mozzamp:latest
+./get_so_file.sh mp_plugins_gpu:fixed
 ```
 
 ## Move the .so to DuckSoup
@@ -237,60 +247,65 @@ If you run this in within docker and are using the CPU version, and want to impr
 ```
 
 # Testing
-You can verify all plugins using the provided automated test script. This script checks for plugin availability and runs a functional test on `test_face.jpg`.
+You can verify all plugins using the provided automated test script. This script checks for plugin availability and runs a functional test on a still image.
 
 **Inside Docker:**
 ```bash
-docker run --rm --gpus all -v "$PWD:/models" \
-  -e GST_PLUGIN_PATH=/models/mp-out/plugins \
-  mp_plugins_test:latest \
-  bash -c "cd /models && ./test_plugins.sh"
+docker run --rm --gpus all -v "$PWD:/work" \
+  -e GST_PLUGIN_PATH=/work/mp-out/plugins \
+  -e LD_LIBRARY_PATH=/work/mp-out/lib:/opt/gstreamer/lib/x86_64-linux-gnu \
+  mp_plugins_test:fixed \
+  bash -c "cd /work && ./test_plugins.sh"
 ```
 
 The script will generate:
-- `test_out_landmarks.png`: Landmarks overlay (CPU)
-- `test_out_mozza_cpu.png`: Deformation (CPU)
-- `test_out_mozza_gpu.png`: Deformation (GPU)
+- `test_out_landmarks.png`: Landmarks overlay (CPU facelandmarks)
+- `test_out_mozza_cpu.png`: Deformation (CPU mozza_mp)
+- `test_out_mozza_gpu.png`: Deformation (GPU mozza_mp_gpu)
 
 # Quick runs
 
 ## Check gst-inspect-1.0
-gst-inspect-1.0 mozzamp
+```bash
+# CPU plugin (no GPU needed)
+docker run --rm \
+  -e GST_PLUGIN_PATH=/plugins \
+  -v "$PWD/mp-out/plugins:/plugins" \
+  ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 \
+  gst-inspect-1.0 mozza_mp
 
-Or with the .so directly:
-gst-inspect-1.0 libgstmozzamp.so
-
-## Synthetic input (videotestsrc → mp4 file on host)
-```
-mkdir -p out
-docker run --rm -it -v "$PWD/out:/out" mozzamp:latest bash -lc '
-  gst-launch-1.0 -v \
-    videotestsrc num-buffers=300 ! video/x-raw,width=640,height=480,framerate=30/1 ! \
-    videoconvert ! video/x-raw,format=RGBA ! \
-    mozzamp model=/opt/models/face_landmarker.task max-faces=1 threads=4 draw=true landmark-radius=2 landmark-color=0x00FF00FF ! \
-    videoconvert ! x264enc tune=zerolatency ! mp4mux ! filesink location=/out/landmarked.mp4
-'
+# GPU plugin
+docker run --rm --gpus all mp_plugins_test:fixed gst-inspect-1.0 mozza_mp_gpu
 ```
 
-## Process a host video file
-docker run --rm -it -v "$PWD:/work" mozzamp:latest bash -lc '
-  gst-launch-1.0 -v \
-    filesrc location=/work/input.mp4 ! decodebin ! videoconvert ! video/x-raw,format=RGBA ! \
-    mozzamp model=/opt/models/face_landmarker.task max-faces=1 threads=4 ! \
-    videoconvert ! x264enc ! mp4mux ! filesink location=/work/output_landmarked.mp4
-'
-
-## Element usage
-The plugin expects RGBA input; negotiate with videoconvert if needed. It can also
-negotiate GPU buffers via `video/x-raw(memory:GLMemory)` and will fall back to CPU
-copies when such memory types are unsupported:
-
+## Process a video with CPU (deformation)
+```bash
+docker run --rm \
+  -v "$PWD:/work" -v "$PWD/env:/models" \
+  -e GST_PLUGIN_PATH=/work/mp-out/plugins \
+  -e LD_LIBRARY_PATH=/work/mp-out/lib:/opt/gstreamer/lib/x86_64-linux-gnu \
+  ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 \
+  gst-launch-1.0 -q \
+    filesrc location=/work/assets/video_example.mp4 ! decodebin ! videoconvert ! \
+    video/x-raw,format=RGBA ! \
+    mozza_mp model=/models/face_landmarker.task deform=/work/smile.dfm alpha=1.5 \
+      warp-mode=per-group-roi ! \
+    videoconvert ! x264enc tune=zerolatency ! mp4mux ! \
+    filesink location=/work/output_cpu.mp4
 ```
-gst-launch-1.0 -v \
-  videotestsrc ! video/x-raw,width=640,height=480 ! \
-  videoconvert ! video/x-raw,format=RGBA ! \
-  mozzamp model=/opt/models/face_landmarker.task max-faces=1 threads=4 draw=true landmark-radius=2 landmark-color=0x00FF00FF ! \
-  fakesink
+
+## Process a video with GPU (deformation)
+```bash
+docker run --rm --gpus all \
+  -v "$PWD:/work" -v "$PWD/env:/models" \
+  mp_plugins_test:fixed \
+  gst-launch-1.0 -q \
+    filesrc location=/work/assets/video_example.mp4 ! decodebin ! videoconvert ! \
+    video/x-raw,format=RGBA ! \
+    mozza_mp_gpu model_path=/models/face_landmarker.task deform=/work/smile.dfm alpha=1.5 \
+      warp-mode=1 ! \
+    videoconvert ! x264enc tune=zerolatency ! mp4mux ! \
+    filesink location=/work/output_gpu.mp4
 ```
 
 # Internals & notes
@@ -302,8 +317,10 @@ gst-launch-1.0 -v \
 
 
 # Update MediaPipe version
-```
-docker build --build-arg MP_REF=v0.10.xx -t mozzamp:latest .
+Change `ARG MEDIAPIPE_TAG=v0.10.26` at the top of `Dockerfile.gpu` then rebuild:
+```bash
+DOCKER_BUILDKIT=1 docker build --no-cache -f Dockerfile.gpu \
+  --output type=local,dest=mp-out -t mp_plugins_gpu:fixed .
 ```
 
 # Python Wrapper: mozza_process.py
@@ -322,27 +339,34 @@ chmod +x download_face_landmarker_model.sh
 
 ### Basic Usage
 ```bash
-# Process a video using GPU
-python3 mozza_process.py --input assets/video_example.mp4 --output assets/output.mp4 --mode gpu --deform smile.dfm --alpha 2.0
+# Process a video using GPU (deformation, no landmark overlay)
+python3 mozza_process.py --input assets/video_example.mp4 --output assets/output.mp4 \
+  --mode gpu --deform smile.dfm --alpha 2.0 --warp-mode per-group-roi --show-landmarks false
 
-# Process an image using CPU
-python3 mozza_process.py --input assets/test_face.jpg --output assets/output.png --mode cpu --deform smile.dfm --alpha 1.5
+# Process a video using CPU (deformation)
+python3 mozza_process.py --input assets/video_example.mp4 --output assets/output.mp4 \
+  --mode cpu --deform smile.dfm --alpha 1.5 --warp-mode per-group-roi --show-landmarks false
 
-# Extract landmarks only (green dots)
-python3 mozza_process.py --input assets/test_face.jpg --output assets/landmarks.png --mode landmarks --show-landmarks
+# Show landmark tracking only (no deformation)
+python3 mozza_process.py --input assets/video_example.mp4 --output assets/landmarks.mp4 \
+  --mode gpu --no-warp true --show-landmarks true
 ```
 
-### All Parameters
-| Flag | Description |
-|------|-------------|
-| `--input` | Input image or video file path. |
-| `--output`| Output file path (automatically adds extension if missing). |
-| `--mode`  | `gpu`, `cpu`, or `landmarks`. |
-| `--deform`| Path to your `.dfm` file. |
-| `--alpha` | Intensity of the transformation (default 1.0). |
-| `--model-path`| Path to `.task` model (default `face_landmarker.task`). |
-| `--show-landmarks`| Draw landmarks on the output. |
-| `--verbose`| Print the full Docker and GStreamer commands. |
+### Key Parameters
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input` | required | Input image or video file path. |
+| `--output` | required | Output file path (extension added automatically if missing). |
+| `--mode` | `gpu` | `gpu`, `cpu`, or `landmarks`. |
+| `--docker-image` | `mp_plugins_test:latest` | Docker image for GPU mode. |
+| `--deform` | none | Path to `.dfm` deformation file. |
+| `--alpha` | 1.0 | Deformation intensity. |
+| `--warp-mode` | `global` | `global` or `per-group-roi` (recommended for CPU). GPU uses `0`/`1` internally. |
+| `--show-landmarks` | `true` | `true` or `false` — draw landmark dots on output. |
+| `--no-warp` | `false` | `true` to skip MLS warping (landmark tracking only). |
+| `--model-path` | `face_landmarker.task` | Path to `.task` model. |
+| `--smooth` | 0.5 | Temporal EMA smoothing on ROI (GPU only, 0=off). |
+| `--verbose` | false | Print the full Docker and GStreamer commands. |
 
 Run `python3 mozza_process.py --help` for the full list of supported parameters.
 
