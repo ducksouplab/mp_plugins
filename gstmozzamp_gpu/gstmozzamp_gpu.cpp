@@ -58,7 +58,9 @@ struct OneEuroFilter {
   float min_cutoff, beta, d_cutoff;
   bool first_time = true;
   float x_prev, dx_prev;
-  OneEuroFilter() : min_cutoff(1.0f), beta(0.007f), d_cutoff(1.0f) {}
+  // min_cutoff: lower = more smoothing at rest (less jitter), more lag
+  // beta: higher = faster response to motion (less lag at speed)
+  OneEuroFilter() : min_cutoff(0.5f), beta(0.007f), d_cutoff(1.0f) {}
   float alpha(float cutoff, float dt) {
     float r = 2.0f * M_PI * cutoff * dt;
     return r / (r + 1.0f);
