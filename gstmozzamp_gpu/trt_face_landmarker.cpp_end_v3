@@ -1,0 +1,41 @@
+    // Transform landmarks from crop-local back to full-image [0,1]
+    for (int li = 0; li < 478; ++li) {
+      float lx = I.h_lm_landmarks[li * 3 + 0];  
+      float ly = I.h_lm_landmarks[li * 3 + 1];  
+      float lz = I.h_lm_landmarks[li * 3 + 2];
+
+      float norm_x = lx;
+      float norm_y = ly;
+      if (lx > 2.0f || ly > 2.0f) {
+        norm_x /= (float)I.LM_W;
+        norm_y /= (float)I.LM_H;
+      }
+
+      // Apply forward affine transform: Src_X = m0*lx_pixel + m1*ly_pixel + m2
+      float lx_p = norm_x * (float)I.LM_W;
+      float ly_p = norm_y * (float)I.LM_H;
+      float img_x = m[0] * lx_p + m[1] * ly_p + m[2];
+      float img_y = m[3] * lx_p + m[4] * ly_p + m[5];
+
+      face_out.landmarks[li * 3 + 0] = img_x / (float)width;
+      face_out.landmarks[li * 3 + 1] = img_y / (float)height;
+      face_out.landmarks[li * 3 + 2] = lz / (float)I.LM_W; 
+    }
+
+    // Dump landmarks for comparison
+    static int dump_count = 0;
+    if (dump_count < 10) {
+      FILE* fp = fopen("/work/landmarks_gpu.txt", dump_count == 0 ? "w" : "a");
+      if (fp) {
+        fprintf(fp, "Frame %d Face %d:\n", dump_count, fi);
+        for(int i=0; i<478; i++) 
+          fprintf(fp, "%f,%f,%f\n", face_out.landmarks[i*3+0], face_out.landmarks[i*3+1], face_out.landmarks[i*3+2]);
+        fclose(fp);
+      }
+      if (fi == n_faces - 1) dump_count++;
+    }
+  }
+
+  result.face_count = n_faces;
+  return result;
+}

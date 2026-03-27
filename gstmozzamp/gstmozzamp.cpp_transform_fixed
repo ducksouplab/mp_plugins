@@ -1,0 +1,150 @@
+static void overlay_landmarks(uint8_t* data, int W, int H, int stride,
+                              const std::vector<cv::Point2f>& L,
+                              int radius, uint32_t rgba) {
+  const uint8_t R = (rgba >> 24) & 0xFF;
+  const uint8_t G = (rgba >> 16) & 0xFF;
+  const uint8_t B = (rgba >>  8) & 0xFF;
+  const uint8_t A = (rgba >>  0) & 0xFF;
+
+  for (const auto& p : L) {
+    int cx = (int)p.x;
+    int cy = (int)p.y;
+    const int x0 = std::max(0, cx - radius), x1 = std::min(W - 1, cx + radius);
+    const int y0 = std::max(0, cy - radius), y1 = std::min(H - 1, cy + radius);
+    const int r2 = radius * radius;
+
+    for (int y = y0; y <= y1; ++y) {
+      uint8_t* row = data + y * stride;
+      for (int x = x0; x <= x1; ++x) {
+        if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) {
+          uint8_t* pix = row + x * 4;
+          const uint16_t ai = A;
+          pix[0] = static_cast<uint8_t>((pix[0] * (255 - ai) + R * ai) / 255);
+          pix[1] = static_cast<uint8_t>((pix[1] * (255 - ai) + G * ai) / 255);
+          pix[2] = static_cast<uint8_t>((pix[2] * (255 - ai) + B * ai) / 255);
+          pix[3] = std::max<uint8_t>(pix[3], A);
+        }
+      }
+    }
+  }
+}
+
+static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
+                                                    GstVideoFrame* f) {
+
+  auto* self = GST_MOZZA_MP(vf);
+  if (!self->mp_ctx) return GST_FLOW_OK;
+
+  self->frame_count++;
+
+  const int W      = GST_VIDEO_FRAME_WIDTH(f);
+  const int H      = GST_VIDEO_FRAME_HEIGHT(f);
+  const int stride = GST_VIDEO_FRAME_PLANE_STRIDE(f, 0);
+  auto* data       = static_cast<uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(f, 0));
+
+  cv::Mat img_rgba(H, W, CV_8UC4, data, static_cast<size_t>(stride));
+  if (img_rgba.empty()) return GST_FLOW_OK;
+
+  MpImage img{};
+  img.data   = static_cast<const uint8_t*>(data);
+  img.width  = W;
+  img.height = H;
+  img.format = MP_FORMAT_RGBA;
+
+  GstClockTime pts = GST_BUFFER_PTS(f->buffer);
+  int64_t ts_us;
+  if (self->ignore_ts) {
+      ts_us = (int64_t)self->frame_count * 33333LL;
+  } else {
+      ts_us = (int64_t)GST_TIME_AS_USECONDS(pts);
+  }
+
+  if (self->frame_count <= 5) {
+    GST_INFO_OBJECT(self, "FRAME %llu TRACKER DIAGNOSTIC | pts: %" GST_TIME_FORMAT " | synthetic ts_us: %lld | ts_ms sent to MP: %lld",
+                    (unsigned long long)self->frame_count, GST_TIME_ARGS(pts), (long long)ts_us, (long long)(ts_us / 1000));
+  }
+
+  auto t0 = std::chrono::steady_clock::now();
+  MpFaceResult out;
+  int rc = MpApi().face_detect_at(self->mp_ctx, &img, ts_us, &out);
+  auto t1 = std::chrono::steady_clock::now();
+  auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+
+  auto should_log = [&](guint64 frame) -> bool {
+    if (self->log_every == 0) return false;
+    if (self->log_every == 1) return true;
+    return (frame % self->log_every) == 1;
+  };
+
+  if (rc != 0) { MpApi().face_free_result(&out); return GST_FLOW_OK; }
+
+  if (out.faces_count == 0) {
+    MpApi().face_free_result(&out);
+    if (self->drop) return GST_BASE_TRANSFORM_FLOW_DROPPED;
+    return GST_FLOW_OK;
+  }
+
+  const MpFace& f0 = out.faces[0];
+  if (out.faces_count > 0 && self->frame_count == 1) {
+    std::printf("[CPU] Frame 1 landmarks (W=%d, H=%d):\n", W, H);
+    for (int i = 0; i < 10; i++) {
+      std::printf("[CPU] Landmark[%d]: %.1f, %.1f\n", i, 
+                   out.faces[0].landmarks[i].x * W, 
+                   out.faces[0].landmarks[i].y * H);
+    }
+    std::fflush(stdout);
+  }
+
+  if (should_log(self->frame_count)) {
+    GST_INFO_OBJECT(self, "faces=%d landmarks=%d (detect %.3f ms, ts_us=%lld)", out.faces_count, f0.landmarks_count, us / 1000.0, (long long)ts_us);
+    log_landmark_stats(self, f0, W, H);
+  }
+
+  std::vector<cv::Point2f> L; L.reserve(f0.landmarks_count);
+  for (int i = 0; i < f0.landmarks_count; ++i) L.emplace_back(f0.landmarks[i].x * W, f0.landmarks[i].y * H);
+
+  if (self->dfm && !self->no_warp) {
+    if (!self->mls) { MpApi().face_free_result(&out); return GST_FLOW_OK; }
+
+    std::vector<std::vector<cv::Point2f>> srcGroups, dstGroups;
+    build_groups_from_dfm(*self->dfm, L, self->alpha, srcGroups, dstGroups);
+
+    if (!srcGroups.empty()) {
+      size_t ctrl_pts = 0;
+      for (size_t g = 0; g < srcGroups.size(); ++g) ctrl_pts += srcGroups[g].size();
+
+      if (self->warp_mode == WARP_PER_GROUP_ROI) {
+        for (size_t g = 0; g < srcGroups.size(); ++g) compute_MLS_on_ROI(img_rgba, *self->mls, srcGroups[g], dstGroups[g], self->roi_pad);
+      } else {
+        std::vector<cv::Point2f> src, dst; src.reserve(ctrl_pts + 4); dst.reserve(ctrl_pts + 4);
+        for (size_t g = 0; g < srcGroups.size(); ++g) {
+          src.insert(src.end(), srcGroups[g].begin(), srcGroups[g].end());
+          dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
+        }
+        add_identity_anchors(cv::Rect(0, 0, W, H), src, dst, 2);
+        cv::Mat warped = self->mls->setAllAndGenerate(img_rgba, src, dst, img_rgba.cols, img_rgba.rows);
+        if (!warped.empty()) warped.copyTo(img_rgba);
+      }
+    }
+  }
+
+  if (self->show_landmarks) {
+    overlay_landmarks(data, W, H, stride, L, self->lm_radius, self->lm_color);
+  }
+
+  // Dump landmarks for comparison
+  static int dump_count_cpu = 0;
+  if (dump_count_cpu < 10) {
+    FILE* fp = fopen("/work/landmarks_cpu.txt", dump_count_cpu == 0 ? "w" : "a");
+    if (fp) {
+      fprintf(fp, "Frame %d Face 0:\n", dump_count_cpu);
+      for(int i=0; i<f0.landmarks_count; i++) 
+        fprintf(fp, "%f,%f,%f\n", f0.landmarks[i].x, f0.landmarks[i].y, f0.landmarks[i].z);
+      fclose(fp);
+    }
+    dump_count_cpu++;
+  }
+
+  MpApi().face_free_result(&out);
+  return GST_FLOW_OK;
+}

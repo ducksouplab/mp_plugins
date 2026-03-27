@@ -126,6 +126,13 @@ struct _GstMozzaMpGpu {
 
   // Stats
   guint64 frame_count;
+
+  // Per-step timing accumulators (microseconds, faces-only frames)
+  double sum_h2d_us;
+  double sum_detect_us;
+  double sum_smooth_us;
+  double sum_warp_us;
+  guint64 timing_count;
 };
 
 G_END_DECLS
@@ -437,6 +444,11 @@ static gboolean gst_mozza_mp_gpu_start(GstBaseTransform* base) {
   }
 
   self->frame_count = 0;
+  self->sum_h2d_us = 0;
+  self->sum_detect_us = 0;
+  self->sum_smooth_us = 0;
+  self->sum_warp_us = 0;
+  self->timing_count = 0;
   return TRUE;
 }
 
@@ -554,12 +566,34 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
 
   self->frame_count++;
 
+  // Timing is only active when log-every > 0 AND GST INFO is enabled for this
+  // category (i.e. GST_DEBUG=mozza_mp_gpu:4 or higher).  When inactive there
+  // is zero overhead: no extra cudaStreamSynchronize, no clock reads.
+  const bool do_timing =
+      self->log_every > 0 &&
+      gst_debug_category_get_threshold(GST_CAT_DEFAULT) >= GST_LEVEL_INFO;
+
+  // ── Step 1: H2D upload ──
+  std::chrono::steady_clock::time_point t_h2d_start, t_h2d_end,
+      t_detect_end, t_smooth_end, t_warp_end;
+
+  if (do_timing) t_h2d_start = std::chrono::steady_clock::now();
+
   cudaMemcpy2DAsync(self->d_frame_in, self->alloc_pitch, data, stride, W * 4,
                     H, cudaMemcpyHostToDevice, self->cuda_stream);
 
+  if (do_timing) {
+    // Sync only needed to isolate H2D from detect; skipped in normal operation.
+    cudaStreamSynchronize(self->cuda_stream);
+    t_h2d_end = std::chrono::steady_clock::now();
+  }
+
+  // ── Step 2: TRT face detection + landmark inference ──
   GpuLandmarkResult lm_result =
       self->trt_lm->detect(self->d_frame_in, W, H, self->alloc_pitch,
                            self->cuda_stream);
+
+  if (do_timing) t_detect_end = std::chrono::steady_clock::now();
 
   if (lm_result.face_count == 0) {
     // Reset filter state so the filter re-initialises cleanly when the face
@@ -617,6 +651,8 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
     }
   }
 
+  if (do_timing) t_smooth_end = std::chrono::steady_clock::now();
+
   // ── Apply Deformation (MLS Warp) ──
   if (self->dfm && self->cuda_warp && !self->no_warp) {
     std::vector<std::vector<cv::Point2f>> srcGroups, dstGroups;
@@ -671,6 +707,37 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
       cudaMemcpy2DAsync(data, stride, self->d_frame_out, self->alloc_pitch,
                         W * 4, H, cudaMemcpyDeviceToHost, self->cuda_stream);
       cudaStreamSynchronize(self->cuda_stream);
+    }
+  }
+  if (do_timing) {
+    t_warp_end = std::chrono::steady_clock::now();
+
+    auto us_diff = [](std::chrono::steady_clock::time_point a,
+                      std::chrono::steady_clock::time_point b) -> double {
+      return (double)std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+    };
+    self->sum_h2d_us    += us_diff(t_h2d_start, t_h2d_end);
+    self->sum_detect_us += us_diff(t_h2d_end,   t_detect_end);
+    self->sum_smooth_us += us_diff(t_detect_end, t_smooth_end);
+    self->sum_warp_us   += us_diff(t_smooth_end, t_warp_end);
+    self->timing_count++;
+
+    if (self->timing_count % self->log_every == 0) {
+      double n = (double)self->log_every;
+      double h2d_ms    = self->sum_h2d_us    / n / 1000.0;
+      double detect_ms = self->sum_detect_us / n / 1000.0;
+      double smooth_ms = self->sum_smooth_us / n / 1000.0;
+      double warp_ms   = self->sum_warp_us   / n / 1000.0;
+      double total_ms  = h2d_ms + detect_ms + smooth_ms + warp_ms;
+      GST_INFO_OBJECT(self,
+          "TIMING frame=%llu (window avg)  H2D=%.2fms  TRT-detect=%.2fms  "
+          "smooth=%.2fms  warp+D2H=%.2fms  total=%.2fms  (%.0f fps)",
+          (unsigned long long)self->timing_count,
+          h2d_ms, detect_ms, smooth_ms, warp_ms, total_ms,
+          total_ms > 0.0 ? 1000.0 / total_ms : 0.0);
+      // Reset window accumulators
+      self->sum_h2d_us = 0; self->sum_detect_us = 0;
+      self->sum_smooth_us = 0; self->sum_warp_us = 0;
     }
   }
 
@@ -854,6 +921,11 @@ static void gst_mozza_mp_gpu_init(GstMozzaMpGpu* self) {
   self->alloc_h = 0;
   self->alloc_pitch = 0;
   self->frame_count = 0;
+  self->sum_h2d_us = 0;
+  self->sum_detect_us = 0;
+  self->sum_smooth_us = 0;
+  self->sum_warp_us = 0;
+  self->timing_count = 0;
 }
 
 static gboolean plugin_init(GstPlugin* plugin) {
