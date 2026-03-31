@@ -250,6 +250,13 @@ The script will generate:
 - `test_out_mozza_cpu.png`: Deformation (CPU mozza_mp)
 - `test_out_mozza_gpu.png`: Deformation (GPU mozza_mp_gpu)
 
+### Batch Processing
+You can regenerate all transformations for all assets in the `assets/` folder by running:
+```bash
+./generate_all_outputs.sh
+```
+The results will be stored in the `output/` directory.
+
 # Quick runs
 
 ## Check gst-inspect-1.0

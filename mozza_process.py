@@ -147,11 +147,8 @@ def main():
     # Docker command
     docker_cmd = [
         "docker", "run", "--rm",
-        "-e", "LANDMARK_OUTPUT_FILE=/work/dyn_cpu.txt",
         "-v", f"{input_dir}:{docker_workdir}",
         "-v", f"{model_dir}:/models",
-        "-v", f"{os.getcwd()}/mp-out/plugins:/plugins",
-        "-e", f"GST_PLUGIN_PATH=/plugins:/usr/local/lib/gstreamer-1.0:/opt/gstreamer/lib/x86_64-linux-gnu/gstreamer-1.0",
     ]
     if args.deform:
         docker_cmd.extend(["-v", f"{deform_dir}:/deform"])
@@ -161,8 +158,9 @@ def main():
         docker_cmd.append("all")
         
     docker_cmd.extend([
+        "--entrypoint", "/opt/gstreamer/bin/gst-launch-1.0",
         args.docker_image,
-        "gst-launch-1.0", "-q",
+        "-q",
     ])
     
     # Split pipeline into components for subprocess
