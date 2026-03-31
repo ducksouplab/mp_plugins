@@ -1,20 +1,10 @@
 FROM ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0
 
-# Add NVIDIA repo for TensorRT runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
-    curl -L -O https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb && \
-    dpkg -i cuda-keyring_1.1-1_all.deb && \
-    rm cuda-keyring_1.1-1_all.deb && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-    cuda-cudart-12-3 \
-    libnvinfer10 libnvonnxparsers10 libnvinfer-plugin10 \
-    libopencv-core406 libopencv-imgproc406 \
-    libminizip1 zlib1g && \
-    rm -rf /var/lib/apt/lists/*
+# TensorRT is already present in the base image ducksouplab/debian-gstreamer
+# so we don't need to reinstall it. Just ensure ldconfig runs for the new libs.
 
-COPY --from=mp_plugins_gpu /out/lib/libmp_runtime.so /usr/local/lib/
-COPY --from=mp_plugins_gpu /out/plugins/*.so /usr/local/lib/gstreamer-1.0/
+COPY --from=mp_plugins_gpu /lib/libmp_runtime.so /usr/local/lib/
+COPY --from=mp_plugins_gpu /plugins/*.so /usr/local/lib/gstreamer-1.0/
 
 ENV GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/opt/gstreamer/lib/x86_64-linux-gnu/gstreamer-1.0
 ENV LD_LIBRARY_PATH=/usr/local/lib:/opt/gstreamer/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
