@@ -315,21 +315,28 @@ void CudaMlsWarp::warp(const uint8_t* d_src_rgba, uint8_t* d_dst_rgba,
   std::memcpy(h_new.data(), h_src_pts_xy, nPoints * 2 * sizeof(float));
 
   if (cfg_.preScale) {
-    // Compute bounding box area for old and new points
-    auto calcArea = [](const float* pts, int n) -> float {
-      float minx = 1e10f, miny = 1e10f, maxx = -1e10f, maxy = -1e10f;
+    // Compute scale ratio using variance from centroid (rotation-invariant)
+    auto calcVariance = [](const float* pts, int n) -> float {
+      if (n == 0) return 0.0f;
+      float cx = 0.0f, cy = 0.0f;
       for (int i = 0; i < n; ++i) {
-        float x = pts[i * 2], y = pts[i * 2 + 1];
-        minx = std::min(minx, x);
-        miny = std::min(miny, y);
-        maxx = std::max(maxx, x);
-        maxy = std::max(maxy, y);
+        cx += pts[i * 2];
+        cy += pts[i * 2 + 1];
       }
-      return std::max(0.0f, (maxx - minx) * (maxy - miny));
+      cx /= n;
+      cy /= n;
+
+      float var = 0.0f;
+      for (int i = 0; i < n; ++i) {
+        float dx = pts[i * 2] - cx;
+        float dy = pts[i * 2 + 1] - cy;
+        var += dx * dx + dy * dy;
+      }
+      return var;
     };
 
-    float a_old = calcArea(h_old.data(), nPoints);
-    float a_new = calcArea(h_new.data(), nPoints);
+    float a_old = calcVariance(h_old.data(), nPoints);
+    float a_new = calcVariance(h_new.data(), nPoints);
 
     if (a_old > 1e-12f && a_new > 1e-12f) {
       ratio = std::sqrt(a_new / a_old);

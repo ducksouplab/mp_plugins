@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     libminizip1 zlib1g && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=mp_plugins_gpu /out/lib/libmp_runtime.so /usr/local/lib/
-COPY --from=mp_plugins_gpu /out/plugins/*.so /usr/local/lib/gstreamer-1.0/
+COPY --from=mp_plugins_gpu /lib/libmp_runtime.so /usr/local/lib/
+COPY --from=mp_plugins_gpu /plugins/*.so /usr/local/lib/gstreamer-1.0/
 
 ENV GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/opt/gstreamer/lib/x86_64-linux-gnu/gstreamer-1.0
 ENV LD_LIBRARY_PATH=/usr/local/lib:/opt/gstreamer/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH

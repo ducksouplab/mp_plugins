@@ -58,8 +58,10 @@ run_cpu_plugin() {
     -e GST_DEBUG="2" \
     "$BASE_IMAGE" \
     gst-launch-1.0 -q \
-    multifilesrc location=/work_image num-buffers=${FRAMES} loop=true \
+    filesrc location=/work_image \
     '!' jpegdec \
+    '!' imagefreeze num-buffers=${FRAMES} \
+    '!' "video/x-raw,framerate=30/1" \
     '!' videoconvert \
     '!' "video/x-raw,format=RGBA" \
     '!' mozza_mp \
@@ -92,8 +94,10 @@ run_gpu_plugin() {
     -e GST_DEBUG="2" \
     "$TEST_IMAGE" \
     gst-launch-1.0 -q \
-    multifilesrc location=/work_image num-buffers=${FRAMES} loop=true \
+    filesrc location=/work_image \
     '!' jpegdec \
+    '!' imagefreeze num-buffers=${FRAMES} \
+    '!' "video/x-raw,framerate=30/1" \
     '!' videoconvert \
     '!' "video/x-raw,format=RGBA" \
     '!' mozza_mp_gpu \

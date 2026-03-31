@@ -16,15 +16,22 @@ static inline bool IMGWARP_DIAG() {
 
 ImgWarp_MLS_Rigid::ImgWarp_MLS_Rigid() { preScale = false; }
 
-static double calcArea(const vector<cv::Point_<double> > &V) {
-    cv::Point_<double> lt(+1e10, +1e10), rb(-1e10, -1e10);
+static double calcVariance(const vector<cv::Point_<double> > &V) {
+    if (V.empty()) return 0.0;
+    cv::Point_<double> centroid(0.0, 0.0);
     for (const auto& p : V) {
-        if (p.x < lt.x) lt.x = p.x;
-        if (p.y < lt.y) lt.y = p.y;
-        if (p.x > rb.x) rb.x = p.x;
-        if (p.y > rb.y) rb.y = p.y;
+        centroid += p;
     }
-    return std::max(0.0, (rb.x - lt.x) * (rb.y - lt.y));
+    centroid.x /= V.size();
+    centroid.y /= V.size();
+
+    double var = 0.0;
+    for (const auto& p : V) {
+        double dx = p.x - centroid.x;
+        double dy = p.y - centroid.y;
+        var += dx*dx + dy*dy;
+    }
+    return var;
 }
 
 
@@ -37,8 +44,8 @@ void ImgWarp_MLS_Rigid::calcDelta() {
     // Optional pre-scaling to unify scale
     double ratio = 1.0;
     if (preScale) {
-        const double a_old = calcArea(oldDotL);
-        const double a_new = calcArea(newDotL);
+        const double a_old = calcVariance(oldDotL);
+        const double a_new = calcVariance(newDotL);
         if (a_old > 1e-12 && a_new > 1e-12) {
             ratio = std::sqrt(a_new / a_old);
             if (std::isfinite(ratio) && ratio > 1e-12) {

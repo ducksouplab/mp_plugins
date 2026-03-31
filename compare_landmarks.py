@@ -27,6 +27,10 @@ print(f"Loaded {len(cpu_frames)} CPU frames and {len(gpu_frames)} GPU frames")
 
 min_frames = min(len(cpu_frames), len(gpu_frames))
 
+if len(cpu_frames) > 1 and len(gpu_frames) > 1:
+    print(f"\nCPU internal tracking drift (Frame 1 vs Frame 0): {np.max(np.abs(cpu_frames[1] - cpu_frames[0])):.6f}")
+    print(f"GPU internal tracking drift (Frame 1 vs Frame 0): {np.max(np.abs(gpu_frames[1] - gpu_frames[0])):.6f}\n")
+
 for f in range(min_frames):
     cpu = cpu_frames[f]
     gpu = gpu_frames[f]

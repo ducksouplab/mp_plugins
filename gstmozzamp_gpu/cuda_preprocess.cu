@@ -42,7 +42,7 @@ __device__ static inline float4 bilinear_sample_rgba(
   return result;
 }
 
-// Kernel: full-frame RGBA -> RGB float resize + normalize
+// Kernel: full-frame RGBA -> RGB float resize + normalize + letterboxing
 __global__ void k_rgba_to_rgb_resize_norm(
     const uint8_t* __restrict__ d_src, int srcW, int srcH, int srcPitch,
     float* __restrict__ d_dst, int dstW, int dstH, bool chw) {
@@ -50,15 +50,22 @@ __global__ void k_rgba_to_rgb_resize_norm(
   int dy = blockIdx.y * blockDim.y + threadIdx.y;
   if (dx >= dstW || dy >= dstH) return;
 
-  float sx = ((float)dx + 0.5f) * ((float)srcW / (float)dstW) - 0.5f;
-  float sy = ((float)dy + 0.5f) * ((float)srcH / (float)dstH) - 0.5f;
+  float scale = fminf((float)dstW / srcW, (float)dstH / srcH);
+  int crop_w = (int)roundf(srcW * scale);
+  int crop_h = (int)roundf(srcH * scale);
+  int pad_x = (dstW - crop_w) / 2;
+  int pad_y = (dstH - crop_h) / 2;
 
-  float4 px = bilinear_sample_rgba(d_src, srcW, srcH, srcPitch, sx, sy);
+  float r = 0.0f, g = 0.0f, b = 0.0f;
 
-  // Normalize to [0, 1]
-  float r = px.x / 255.0f;
-  float g = px.y / 255.0f;
-  float b = px.z / 255.0f;
+  if (dx >= pad_x && dx < pad_x + crop_w && dy >= pad_y && dy < pad_y + crop_h) {
+    float sx = ((float)(dx - pad_x) + 0.5f) / scale - 0.5f;
+    float sy = ((float)(dy - pad_y) + 0.5f) / scale - 0.5f;
+    float4 px = bilinear_sample_rgba(d_src, srcW, srcH, srcPitch, sx, sy);
+    r = px.x / 255.0f;
+    g = px.y / 255.0f;
+    b = px.z / 255.0f;
+  }
 
   if (chw) {
     // CHW layout: [C][H][W]

@@ -102,6 +102,7 @@ struct _GstMozzaMpGpu {
   gboolean no_warp;
   gfloat smooth;
   gfloat min_cutoff;
+  gfloat beta;
   gboolean smooth_landmarks;
   gint warp_mode;
   gint roi_pad;
@@ -157,6 +158,7 @@ enum {
   PROP_NO_WARP,
   PROP_SMOOTH,
   PROP_MIN_CUTOFF,
+  PROP_BETA,
   PROP_SMOOTH_LANDMARKS,
   PROP_WARP_MODE,
   PROP_ROI_PAD,
@@ -263,6 +265,15 @@ static void gst_mozza_mp_gpu_set_property(GObject* obj, guint prop_id,
         }
       }
       break;
+    case PROP_BETA:
+      self->beta = g_value_get_float(value);
+      if (self->has_filters) {
+        for (int i = 0; i < 478; ++i) {
+          self->filters_x[i].beta = self->beta;
+          self->filters_y[i].beta = self->beta;
+        }
+      }
+      break;
     case PROP_SMOOTH_LANDMARKS:
       self->smooth_landmarks = g_value_get_boolean(value);
       break;
@@ -330,6 +341,9 @@ static void gst_mozza_mp_gpu_get_property(GObject* obj, guint prop_id,
       break;
     case PROP_MIN_CUTOFF:
       g_value_set_float(value, self->min_cutoff);
+      break;
+    case PROP_BETA:
+      g_value_set_float(value, self->beta);
       break;
     case PROP_SMOOTH_LANDMARKS:
       g_value_set_boolean(value, self->smooth_landmarks);
@@ -616,12 +630,11 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
   if (!self->has_filters) {
     self->filters_x.assign(478, OneEuroFilter());
     self->filters_y.assign(478, OneEuroFilter());
-    float b = 0.001f + (1.0f - self->smooth) * 0.012f;
-    for (int i = 0; i < 478; ++i) {
-      self->filters_x[i].beta = b;
-      self->filters_y[i].beta = b;
-      self->filters_x[i].min_cutoff = self->min_cutoff;
+    for(int i=0; i<478; ++i) { 
+      self->filters_x[i].min_cutoff = self->min_cutoff; 
       self->filters_y[i].min_cutoff = self->min_cutoff;
+      self->filters_x[i].beta = self->beta; 
+      self->filters_y[i].beta = self->beta; 
     }
     self->has_filters = true;
   }
@@ -679,6 +692,23 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
 
           std::vector<cv::Point2f> src = sg, dst = dg;
           add_identity_anchors_roi(rx, ry, rw, rh, self->mls_grid, src, dst);
+
+          // Anchor other landmarks inside ROI to prevent "bleeding" into eyes/nose
+          for (const auto& p : L) {
+            if (p.x >= rx && p.x < rx + rw && p.y >= ry && p.y < ry + rh) {
+              // Check if this point is already being moved
+              bool moving = false;
+              for (const auto& sp : sg) {
+                if (std::abs(p.x - sp.x) < 0.1f && std::abs(p.y - sp.y) < 0.1f) {
+                  moving = true; break;
+                }
+              }
+              if (!moving) {
+                src.push_back(p); dst.push_back(p);
+              }
+            }
+          }
+
           int nPts = (int)src.size();
           std::vector<float> h_src_xy(nPts * 2), h_dst_xy(nPts * 2);
           for (int i = 0; i < nPts; ++i) {
@@ -694,6 +724,22 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
           dst.insert(dst.end(), dstGroups[g].begin(), dstGroups[g].end());
         }
         add_identity_anchors(W, H, src, dst);
+
+        // Anchor all other landmarks to prevent global bleeding
+        for (const auto& p : L) {
+          bool moving = false;
+          for (size_t g = 0; g < srcGroups.size(); ++g) {
+            for (const auto& sp : srcGroups[g]) {
+              if (std::abs(p.x - sp.x) < 0.1f && std::abs(p.y - sp.y) < 0.1f) {
+                moving = true; break;
+              }
+            }
+            if (moving) break;
+          }
+          if (!moving) {
+            src.push_back(p); dst.push_back(p);
+          }
+        }
 
         int nPts = (int)src.size();
         std::vector<float> h_src_xy(nPts * 2), h_dst_xy(nPts * 2);
@@ -853,8 +899,13 @@ static void gst_mozza_mp_gpu_class_init(GstMozzaMpGpuClass* klass) {
   g_object_class_install_property(
       gobject_class, PROP_MIN_CUTOFF,
       g_param_spec_float("min-cutoff", "Min cutoff frequency",
-                         "OneEuroFilter min_cutoff: lower = more smoothing at rest (less jitter, more lag). Default 0.5 Hz.",
-                         0.001f, 10.0f, 0.5f, G_PARAM_READWRITE));
+                         "OneEuroFilter min_cutoff: lower = more smoothing at rest (less jitter, more lag). Default 5.0 Hz.",
+                         0.001f, 100.0f, 5.0f, G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_BETA,
+      g_param_spec_float("beta", "Beta (cutoff slope)",
+                         "OneEuroFilter beta: higher = less lag at high speeds. Default 0.007.",
+                         0.0f, 1.0f, 0.007f, G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_SMOOTH_LANDMARKS,
       g_param_spec_boolean("smooth-landmarks", "Smooth Landmarks",
@@ -906,7 +957,8 @@ static void gst_mozza_mp_gpu_init(GstMozzaMpGpu* self) {
   self->show_landmarks = FALSE;
   self->no_warp = FALSE;
   self->smooth = 0.5f;
-  self->min_cutoff = 0.5f;
+  self->min_cutoff = 5.0f;
+  self->beta = 0.007f;
   self->smooth_landmarks = TRUE;
   self->warp_mode = WARP_GLOBAL;
   self->roi_pad = 24;

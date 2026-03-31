@@ -13,10 +13,10 @@ trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
 mkdir -p "$DEST/plugins" "$DEST/lib"
 
 # Copy the plugins and the (stub) runtime out of the image
-docker cp "$CID":/out/plugins/libgstfacelandmarks.so "$DEST/plugins/" || true
-docker cp "$CID":/out/plugins/libgstmozzamp.so       "$DEST/plugins/" || true
-docker cp "$CID":/out/plugins/libgstmozzamp_gpu.so   "$DEST/plugins/" || true
-docker cp "$CID":/out/lib/libmp_runtime.so           "$DEST/lib/"      || true
+docker cp "$CID":/plugins/libgstfacelandmarks.so "$DEST/plugins/" || true
+docker cp "$CID":/plugins/libgstmozzamp.so       "$DEST/plugins/" || true
+docker cp "$CID":/plugins/libgstmozzamp_gpu.so   "$DEST/plugins/" || true
+docker cp "$CID":/lib/libmp_runtime.so           "$DEST/lib/"      || true
 
 echo "Wrote:"
 ls -l "$DEST/plugins" "$DEST/lib" 2>/dev/null || true

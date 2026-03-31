@@ -132,9 +132,36 @@ struct TrtFaceLandmarker::Impl {
   bool has_prev_landmarks = false;
   std::vector<float> prev_landmarks; // 478 * 3, normalized [0, 1]
 
-  // ROI smoothing state
+  // ROI One-Euro smoothing state
+  struct RoiOneEuroFilter {
+    // Heavily clamp beta so fast tracking errors don't shatter the filter's low-pass stability
+    float min_cutoff = 0.1f, beta = 0.002f, d_cutoff = 1.0f;
+    bool first_time = true;
+    float x_prev = 0.0f, dx_prev = 0.0f;
+    float alpha(float cutoff, float dt) {
+      float r = 2.0f * M_PI * cutoff * dt;
+      return r / (r + 1.0f);
+    }
+    float filter(float x, float dt) {
+      if (first_time) {
+        first_time = false;
+        x_prev = x; dx_prev = 0.0f;
+        return x;
+      }
+      if (dt <= 0) return x_prev;
+      float dx = (x - x_prev) / dt;
+      float edx = alpha(d_cutoff, dt) * dx + (1.0f - alpha(d_cutoff, dt)) * dx_prev;
+      float cutoff = min_cutoff + beta * std::abs(edx);
+      float a = alpha(cutoff, dt);
+      float x_filtered = a * x + (1.0f - a) * x_prev;
+      x_prev = x_filtered; dx_prev = edx;
+      return x_filtered;
+    }
+  };
   bool has_prev_roi = false;
   float prev_cx = 0.5f, prev_cy = 0.5f, prev_size = 0.5f;
+  RoiOneEuroFilter filter_cx, filter_cy, filter_size;
+
 
   Impl() {
     h_det_boxes.resize(896 * 16);
@@ -401,9 +428,16 @@ struct DetectedFace {
 
 static std::vector<DetectedFace> decode_detections(
     const float* raw_boxes, const float* raw_scores,
-    const std::vector<std::array<float, 2>>& anchors, float threshold) {
+    const std::vector<std::array<float, 2>>& anchors, float threshold,
+    int width, int height) {
   std::vector<DetectedFace> faces;
   int n = (int)anchors.size();
+
+  float scale = std::min(128.0f / width, 128.0f / height);
+  float crop_w = width * scale;
+  float crop_h = height * scale;
+  float pad_x = (128.0f - crop_w) * 0.5f;
+  float pad_y = (128.0f - crop_h) * 0.5f;
 
   for (int i = 0; i < n; ++i) {
     // Score decoding: always apply sigmoid (raw scores are logits)
@@ -415,31 +449,29 @@ static std::vector<DetectedFace> decode_detections(
     f.score = score;
 
     // Decode box: center offset + size, relative to anchor
-    float ax = anchors[i][0];
-    float ay = anchors[i][1];
+    float ax = anchors[i][0] * 128.0f;
+    float ay = anchors[i][1] * 128.0f;
 
     float dx = raw_boxes[i * 16 + 0];
     float dy = raw_boxes[i * 16 + 1];
     float dw = raw_boxes[i * 16 + 2];
     float dh = raw_boxes[i * 16 + 3];
 
-    // BlazeFace outputs box deltas in 128px input space — always normalize.
-    dx /= 128.0f;
-    dy /= 128.0f;
-    dw /= 128.0f;
-    dh /= 128.0f;
+    float px_cx = dx + ax;
+    float px_cy = dy + ay;
 
-    f.cx = dx + ax;
-    f.cy = dy + ay;
-    f.w = dw;
-    f.h = dh;
+    // Unpad and unscale to original image coordinates
+    f.cx = (px_cx - pad_x) / crop_w;
+    f.cy = (px_cy - pad_y) / crop_h;
+    f.w = dw / crop_w;
+    f.h = dh / crop_h;
 
-    // 6 keypoints — same 128px normalization as box deltas
+    // 6 keypoints
     for (int k = 0; k < 6; ++k) {
-      float kpx = raw_boxes[i * 16 + 4 + k * 2 + 0] / 128.0f;
-      float kpy = raw_boxes[i * 16 + 4 + k * 2 + 1] / 128.0f;
-      f.kp[k][0] = kpx + ax;
-      f.kp[k][1] = kpy + ay;
+      float kpx = raw_boxes[i * 16 + 4 + k * 2 + 0] + ax;
+      float kpy = raw_boxes[i * 16 + 4 + k * 2 + 1] + ay;
+      f.kp[k][0] = (kpx - pad_x) / crop_w;
+      f.kp[k][1] = (kpy - pad_y) / crop_h;
     }
 
     faces.push_back(f);
@@ -463,40 +495,12 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
   float cx = 0, cy = 0, side = 0, angle = 0;
   bool use_tracking = false;
 
-  if (I.has_prev_landmarks) {
-    // 1. Calculate ROI from previous landmarks
-    // Landmarks: 33 (left eye outer), 263 (right eye outer), 17 (lower lip center)
-    float x33 = I.prev_landmarks[33 * 3 + 0] * (float)width;
-    float y33 = I.prev_landmarks[33 * 3 + 1] * (float)height;
-    float x263 = I.prev_landmarks[263 * 3 + 0] * (float)width;
-    float y263 = I.prev_landmarks[263 * 3 + 1] * (float)height;
-    float x17 = I.prev_landmarks[17 * 3 + 0] * (float)width;
-    float y17 = I.prev_landmarks[17 * 3 + 1] * (float)height;
-
-    // Use eye midpoint as crop center (matches detection ROI convention)
-    cx = (x33 + x263) * 0.5f;
-    cy = (y33 + y263) * 0.5f;
-
-    // Rotation from eye line
-    float dx = x263 - x33;
-    float dy = y263 - y33;
-    angle = std::atan2(dy, dx);
-    float dist = std::sqrt(dx * dx + dy * dy);
-
-    // Scale: inter-eye distance * factor (calibrated to match detection ROI side).
-    // Detection uses max(bbox_w,bbox_h)*1.5; with inter-eye-dist≈bbox_w/3, that's ≈ dist*4.0
-    side = dist * 4.0f;
-
-    // Clamp crop size so it never exceeds the frame, then clamp center.
-    // If side > frame dimension, half > dimension/2 and the center clamp
-    // collapses to a degenerate range that always places cx/cy out of bounds.
-    side = std::min(side, (float)std::min(width, height));
-    {
-      float half = side * 0.5f;
-      cx = std::max(half, std::min((float)width  - half, cx));
-      cy = std::max(half, std::min((float)height - half, cy));
-    }
-
+  // Disable landmark-based structural tracking because the FaceLandmarker v2 neural 
+  // network predictions are hyper-dependent on crop scale, causing an unresolvable 
+  // feedback-loop oscillation. Instead, we run the BlazeFace short-range detector (≈2ms)
+  // unconditionally, but aggressively smooth its output via a One-Euro Filter to 
+  // establish jitter-free, mathematically pure Open-Loop tracking parity.
+  if (false && I.has_prev_landmarks) {
     use_tracking = true;
   }
 
@@ -526,11 +530,14 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
 
     static auto anchors = generate_anchors_128();
     faces = decode_detections(I.h_det_boxes.data(), I.h_det_scores.data(), anchors,
-                              I.cfg.det_threshold);
+                              I.cfg.det_threshold, width, height);
 
     if (faces.empty()) {
       I.has_prev_landmarks = false;
       I.has_prev_roi = false;
+      I.filter_cx.first_time = true;
+      I.filter_cy.first_time = true;
+      I.filter_size.first_time = true;
       result.face_count = 0;
       return result;
     }
@@ -542,12 +549,8 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
   for (int fi = 0; fi < n_faces; ++fi) {
     if (!use_tracking) {
       auto& det = faces[fi];
-      // Eye midpoint as crop center: the face landmark model is trained with
-      // the face in the lower portion of the crop, eyes near the crop center (96,96).
-      float eye_midx = (det.kp[0][0] + det.kp[1][0]) * 0.5f * (float)width;
-      float eye_midy = (det.kp[0][1] + det.kp[1][1]) * 0.5f * (float)height;
-      cx = eye_midx;
-      cy = eye_midy;
+      cx = det.cx * (float)width;
+      cy = det.cy * (float)height;
 
       float eye_x = (det.kp[1][0] - det.kp[0][0]) * (float)width;
       float eye_y = (det.kp[1][1] - det.kp[0][1]) * (float)height;
@@ -565,34 +568,26 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
     }
 
     if (!use_tracking) {
-      // ROI Smoothing (EMA) for initial detection
-      if (!I.has_prev_roi) {
-        I.prev_cx = cx; I.prev_cy = cy; I.prev_size = side; I.has_prev_roi = true;
-      } else {
-        const float alpha = 0.15f;
-        I.prev_cx = alpha * cx + (1.0f - alpha) * I.prev_cx;
-        I.prev_cy = alpha * cy + (1.0f - alpha) * I.prev_cy;
-        I.prev_size = alpha * side + (1.0f - alpha) * I.prev_size;
-      }
-      cx = I.prev_cx; cy = I.prev_cy; side = I.prev_size;
-    } else {
-      // For tracking, don't use ROI EMA, but keep prev_cx etc. updated
-      I.prev_cx = cx; I.prev_cy = cy; I.prev_size = side;
+      float dt = 1.0f / 30.0f;
+      cx = I.filter_cx.filter(cx, dt);
+      cy = I.filter_cy.filter(cy, dt);
+      side = I.filter_size.filter(side, dt);
+      I.has_prev_roi = true;
     }
+
+    std::fprintf(stderr, "[DEBUG Tracker] use_tracking=%d, cx=%.1f, cy=%.1f, side=%.1f\n", (int)use_tracking, cx, cy, side);
 
     // Build Affine Matrix (Forward: Dest -> Src)
     float cos_a = std::cos(angle);
     float sin_a = std::sin(angle);
 
     // Scale maps each crop pixel to image pixels.
-    // For a 256x256 model input, scale=side/256 ensures the crop center (128,128)
-    // maps exactly to (cx,cy) in image space. Using side/192 was wrong — it shifted
-    // the face to the upper 37% of the crop (crop pixel 96 instead of 128).
     float scale = side / (float)I.LM_W; // side / 256.0f
+    float map_center = I.LM_W * 0.5f - 0.5f; // 127.5f
     
     float m[6];
-    m[0] =  cos_a * scale; m[1] = -sin_a * scale; m[2] = cx - (cos_a * side * 0.5f - sin_a * side * 0.5f);
-    m[3] =  sin_a * scale; m[4] =  cos_a * scale; m[5] = cy - (sin_a * side * 0.5f + cos_a * side * 0.5f);
+    m[0] =  cos_a * scale; m[1] = -sin_a * scale; m[2] = cx - (cos_a * map_center * scale - sin_a * map_center * scale);
+    m[3] =  sin_a * scale; m[4] =  cos_a * scale; m[5] = cy - (sin_a * map_center * scale + cos_a * map_center * scale);
 
     // Preprocess: warped crop + resize to 256x256 RGB float
     cuda_warp_affine_rgba_to_rgb_normalize(
@@ -672,9 +667,12 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
       float lm_w = lm_xmax - lm_xmin;
       float lm_h = lm_ymax - lm_ymin;
       if (lm_w < 0.05f || lm_h < 0.05f) {
-        std::fprintf(stderr, "[TRT] Landmark sanity check failed (bbox %.3fx%.3f) — resetting tracking\n", lm_w, lm_h);
+        std::fprintf(stderr, "[TRT] Landmark sanity check failed (bbox %.3fx%.3f vs min 0.05) — resetting tracking\n", lm_w, lm_h);
         I.has_prev_landmarks = false;
         I.has_prev_roi = false;
+        I.filter_cx.first_time = true;
+        I.filter_cy.first_time = true;
+        I.filter_size.first_time = true;
         result.face_count = 0;
         return result;
       }
