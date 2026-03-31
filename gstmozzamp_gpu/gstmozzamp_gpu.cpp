@@ -899,8 +899,8 @@ static void gst_mozza_mp_gpu_class_init(GstMozzaMpGpuClass* klass) {
   g_object_class_install_property(
       gobject_class, PROP_MIN_CUTOFF,
       g_param_spec_float("min-cutoff", "Min cutoff frequency",
-                         "OneEuroFilter min_cutoff: lower = more smoothing at rest (less jitter, more lag). Default 5.0 Hz.",
-                         0.001f, 100.0f, 5.0f, G_PARAM_READWRITE));
+                         "OneEuroFilter min_cutoff: lower = more smoothing at rest (less jitter, more lag). Default 1.0 Hz.",
+                         0.001f, 100.0f, 1.0f, G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_BETA,
       g_param_spec_float("beta", "Beta (cutoff slope)",
@@ -957,7 +957,7 @@ static void gst_mozza_mp_gpu_init(GstMozzaMpGpu* self) {
   self->show_landmarks = FALSE;
   self->no_warp = FALSE;
   self->smooth = 0.5f;
-  self->min_cutoff = 5.0f;
+  self->min_cutoff = 1.0f;
   self->beta = 0.007f;
   self->smooth_landmarks = TRUE;
   self->warp_mode = WARP_GLOBAL;
