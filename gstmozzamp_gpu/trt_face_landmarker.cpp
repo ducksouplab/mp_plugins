@@ -493,14 +493,54 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
   auto& I = *impl_;
 
   float cx = 0, cy = 0, side = 0, angle = 0;
+  bool use_tracking = false;
 
-  // We unconditionally run the BlazeFace short-range detector (≈2ms) on every frame.
-  // Stage 2 FaceLandmarker v2 is hyper-dependent on exact crop scale; previous attempts 
-  // to track using Stage 2 landmarks created an unresolvable phase-delay feedback loop.
-  // Instead, we derive Open-Loop tracking bounds strictly from Stage 1 detection,
-  // applying a rigid One-Euro filter to completely synthesize jitter-free parity.
+  if (I.has_prev_landmarks) {
+    // TRUE Morphological tracking: derives strict crop boundary from previous landmarks.
+    // We explicitly avoid ANY temporal smoothing (OneEuro/EMA) on these bounds to prevent
+    // fixed-point feedback loop oscillations. This securely locks the output morphology.
+    float x33 = I.prev_landmarks[33 * 3 + 0] * (float)width;
+    float y33 = I.prev_landmarks[33 * 3 + 1] * (float)height;
+    float x263 = I.prev_landmarks[263 * 3 + 0] * (float)width;
+    float y263 = I.prev_landmarks[263 * 3 + 1] * (float)height;
+
+    float dx = x33 - x263;
+    float dy = y33 - y263;
+    angle = std::atan2(dy, dx);
+
+    float cos_inv = std::cos(-angle);
+    float sin_inv = std::sin(-angle);
+    float min_x = 1e9, max_x = -1e9;
+    float min_y = 1e9, max_y = -1e9;
+    for (int li = 0; li < 478; ++li) {
+      float x = I.prev_landmarks[li * 3 + 0] * (float)width;
+      float y = I.prev_landmarks[li * 3 + 1] * (float)height;
+      float rx = cos_inv * x - sin_inv * y;
+      float ry = sin_inv * x + cos_inv * y;
+      if (rx < min_x) min_x = rx;
+      if (rx > max_x) max_x = rx;
+      if (ry < min_y) min_y = ry;
+      if (ry > max_y) max_y = ry;
+    }
+    float rcx = (min_x + max_x) * 0.5f;
+    float rcy = (min_y + max_y) * 0.5f;
+    cx = std::cos(angle) * rcx - std::sin(angle) * rcy;
+    cy = std::sin(angle) * rcx + std::cos(angle) * rcy;
+    float w = max_x - min_x;
+    float h = max_y - min_y;
+    side = std::max(w, h) * 1.5f;
+
+    side = std::min(side, (float)std::min(width, height));
+    float half = side * 0.5f;
+    cx = std::max(half, std::min((float)width  - half, cx));
+    cy = std::max(half, std::min((float)height - half, cy));
+
+    use_tracking = true;
+  }
+
   std::vector<DetectedFace> faces;
-  // ── Stage 1: Face Detection ──
+  if (!use_tracking) {
+    // ── Stage 1: Face Detection ──
     cuda_rgba_to_rgb_resize_normalize(d_rgba, width, height, pitch,
                                       I.d_det_input, I.DET_W, I.DET_H,
                                       /*chw=*/false, stream);
@@ -535,35 +575,43 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
       result.face_count = 0;
       return result;
     }
+  }
 
-  int n_faces = std::min((int)faces.size(), I.cfg.max_faces);
+  int n_faces = use_tracking ? 1 : std::min((int)faces.size(), I.cfg.max_faces);
   result.faces.resize(n_faces);
 
   for (int fi = 0; fi < n_faces; ++fi) {
-    auto& det = faces[fi];
-    cx = det.cx * (float)width;
-    cy = det.cy * (float)height;
+    if (!use_tracking) {
+      auto& det = faces[fi];
+      cx = det.cx * (float)width;
+      cy = det.cy * (float)height;
 
-    float eye_x = (det.kp[1][0] - det.kp[0][0]) * (float)width;
-    float eye_y = (det.kp[1][1] - det.kp[0][1]) * (float)height;
-    angle = std::atan2(eye_y, eye_x);
-    // Scale from bbox size (face bbox max dim * 1.5)
-    side = std::max(det.w * (float)width, det.h * (float)height) * 1.5f;
+      float eye_x = (det.kp[1][0] - det.kp[0][0]) * (float)width;
+      float eye_y = (det.kp[1][1] - det.kp[0][1]) * (float)height;
+      angle = std::atan2(eye_y, eye_x);
+      // Scale from bbox size (face bbox max dim * 1.5)
+      side = std::max(det.w * (float)width, det.h * (float)height) * 1.5f;
 
-    // Clamp crop size so it never exceeds the frame, then clamp center.
-    side = std::min(side, (float)std::min(width, height));
-    {
+      // Clamp crop size so it never exceeds the frame, then clamp center.
+      side = std::min(side, (float)std::min(width, height));
       float half = side * 0.5f;
       cx = std::max(half, std::min((float)width  - half, cx));
       cy = std::max(half, std::min((float)height - half, cy));
-    }
 
-    // Apply rigorous temporal smoothing to mathematically lock the crop boundaries
-    float dt = 1.0f / 30.0f;
-    cx = I.filter_cx.filter(cx, dt);
-    cy = I.filter_cy.filter(cy, dt);
-    side = I.filter_size.filter(side, dt);
-    I.has_prev_roi = true;
+      // Apply tracking loop bounds for stage 1 startup initialization
+      float dt = 1.0f / 30.0f;
+      cx = I.filter_cx.filter(cx, dt);
+      cy = I.filter_cy.filter(cy, dt);
+      side = I.filter_size.filter(side, dt);
+      I.has_prev_roi = true;
+    } else {
+      // For stage 2 tracking, synchronize the OneEuro history buffers so they don't 
+      // desync when tracking is temporarily lost, but DO NOT filter the structural tracking bounds.
+      float dt = 1.0f / 30.0f;
+      I.filter_cx.filter(cx, dt);
+      I.filter_cy.filter(cy, dt);
+      I.filter_size.filter(side, dt);
+    }
 
     // Build Affine Matrix (Forward: Dest -> Src)
     float cos_a = std::cos(angle);
@@ -600,11 +648,19 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
 
     // Fill result
     auto& face_out = result.faces[fi];
-    face_out.bbox[0] = faces[fi].cx;
-    face_out.bbox[1] = faces[fi].cy;
-    face_out.bbox[2] = faces[fi].w;
-    face_out.bbox[3] = faces[fi].h;
-    face_out.score = faces[fi].score;
+    if (!use_tracking) {
+      face_out.bbox[0] = faces[fi].cx;
+      face_out.bbox[1] = faces[fi].cy;
+      face_out.bbox[2] = faces[fi].w;
+      face_out.bbox[3] = faces[fi].h;
+      face_out.score = faces[fi].score;
+    } else {
+      face_out.bbox[0] = cx / (float)width;
+      face_out.bbox[1] = cy / (float)height;
+      face_out.bbox[2] = side / (float)width;
+      face_out.bbox[3] = side / (float)height;
+      face_out.score = I.h_lm_score;
+    }
 
     // Transform landmarks from crop-local back to full-image [0,1]
     for (int li = 0; li < 478; ++li) {

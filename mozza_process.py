@@ -147,6 +147,7 @@ def main():
     # Docker command
     docker_cmd = [
         "docker", "run", "--rm",
+        "-e", "LANDMARK_OUTPUT_FILE=/work/dyn_cpu.txt",
         "-v", f"{input_dir}:{docker_workdir}",
         "-v", f"{model_dir}:/models",
         "-v", f"{os.getcwd()}/mp-out/plugins:/plugins",
