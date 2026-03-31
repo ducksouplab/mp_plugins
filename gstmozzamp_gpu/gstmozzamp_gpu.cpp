@@ -297,6 +297,7 @@ static void gst_mozza_mp_gpu_get_property(GObject* obj, guint prop_id,
   auto* self = GST_MOZZA_MP_GPU(obj);
   switch (prop_id) {
     case PROP_MODEL_PATH:
+    case PROP_MODEL_ALIAS:
       g_value_set_string(value, self->model_path);
       break;
     case PROP_DEFORM_PATH:

@@ -326,6 +326,7 @@ static void gst_mozza_mp_get_property(GObject* obj, guint prop_id,
     case PROP_ROI_PAD:         g_value_set_int    (value, self->roi_pad);    break;
     case PROP_OVERLAY:         g_value_set_boolean(value, self->overlay);     break;
     case PROP_DROP:            g_value_set_boolean(value, self->drop);        break;
+    case PROP_STRICT_DFM:      g_value_set_boolean(value, self->strict_dfm); break;
     case PROP_SHOW_LANDMARKS:  g_value_set_boolean(value, self->show_landmarks); break;
     case PROP_NO_WARP:         g_value_set_boolean(value, self->no_warp);        break;
     case PROP_FORCE_RGB:       g_value_set_boolean(value, self->force_rgb);      break;

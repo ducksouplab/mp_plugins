@@ -114,6 +114,7 @@ Groups & warp behavior
 | `max-faces` | int | 1 | Maximum number of faces to detect. |
 | `gpu-id` | int | 0 | CUDA device index to use. |
 | `smooth` | float [0..0.99] | 0.5 | Temporal EMA smoothing on ROI (0=off). |
+| `min-cutoff` | float | 0.5 | OneEuroFilter min_cutoff: lower = more smoothing at rest (less jitter, more lag). |
 | `smooth-landmarks` | boolean | true | Apply OneEuroFilter smoothing to landmarks. |
 | `log-every` | uint | 60 | Emit a log message every N frames (0 disables). |
 | `strict-dfm` | boolean | false | Fail to start if a deform file cannot be loaded. |
@@ -171,11 +172,7 @@ DOCKER_BUILDKIT=1 docker build --no-cache -f Dockerfile.gpu \
   -t mp_plugins_gpu:latest .
 ```
 
-This builds all three plugins using Bazel + TensorRT/CUDA and exports the `.so` files to `mp-out/out/plugins/` and `mp-out/out/lib/`. Copy them to the expected location:
-```bash
-cp mp-out/out/plugins/*.so mp-out/plugins/
-cp mp-out/out/lib/*.so    mp-out/lib/
-```
+This builds all three plugins using Bazel + TensorRT/CUDA and exports the `.so` files directly to `mp-out/plugins/` and `mp-out/lib/`.
 
 ## Step 2 — Build the runtime test image
 ```bash
