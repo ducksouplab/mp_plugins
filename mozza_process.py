@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--input", required=True, help="Input file path (image or video)")
     parser.add_argument("--output", required=True, help="Output file path")
     parser.add_argument("--mode", choices=["gpu", "cpu", "landmarks"], default="gpu", help="Processing mode")
-    parser.add_argument("--docker-image", default="mp_plugins_test:latest", help="Docker image to use")
+    parser.add_argument("--docker-image", default="mp_plugins:latest", help="Docker image to use")
     parser.add_argument("--verbose", action="store_true", help="Print verbose output")
 
     # Plugin properties

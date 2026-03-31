@@ -163,37 +163,23 @@ facelandmarks model=/app/plugins/face_landmarker.task threads=6
 
 # Build the plugins with Docker
 
-The build is two stages: first compile all plugins (`Dockerfile.gpu`), then assemble the runtime test image (`Dockerfile.test`).
+The build is a multi-stage process that compiles all plugins and assembles the final runtime image.
 
-## Step 1 — Build plugins
+## Build the image
 ```bash
-DOCKER_BUILDKIT=1 docker build --no-cache -f Dockerfile.gpu \
-  --output type=local,dest=mp-out \
-  -t mp_plugins_gpu:latest .
+DOCKER_BUILDKIT=1 docker build -t mp_plugins:latest .
 ```
 
-This builds all three plugins using Bazel + TensorRT/CUDA and exports the `.so` files directly to `mp-out/plugins/` and `mp-out/lib/`.
-
-## Step 2 — Build the runtime test image
+## (Optional) Export build artifacts to host
+If you need the `.so` files locally (e.g., for DuckSoup deployment), you can export them:
 ```bash
-DOCKER_BUILDKIT=1 docker build -f Dockerfile.test \
-  -t mp_plugins_test:latest \
-  --build-context mp_plugins_gpu=docker-image://mp_plugins_gpu:latest .
+DOCKER_BUILDKIT=1 docker build --target artifacts --output type=local,dest=mp-out .
 ```
-
-This installs the CUDA/TRT runtime libraries and copies the GPU plugin into a runnable image.
+This will place the plugins in `mp-out/plugins/` and libraries in `mp-out/lib/`.
 
 ## Verify plugins
 ```bash
-docker run --rm \
-  -e GST_PLUGIN_PATH=/plugins \
-  -v "$PWD/mp-out/plugins:/plugins" \
-  ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 \
-  gst-inspect-1.0 mozza_mp
-
-docker run --rm --gpus all \
-  mp_plugins_test:latest \
-  gst-inspect-1.0 mozza_mp_gpu
+docker run --rm --gpus all mp_plugins:latest gst-inspect-1.0 mozza_mp_gpu
 ```
 
 ## Get the .so files from an existing image
@@ -255,7 +241,7 @@ You can verify all plugins using the provided automated test script. This script
 docker run --rm --gpus all -v "$PWD:/work" \
   -e GST_PLUGIN_PATH=/work/mp-out/plugins \
   -e LD_LIBRARY_PATH=/work/mp-out/lib:/opt/gstreamer/lib/x86_64-linux-gnu \
-  mp_plugins_test:latest \
+  mp_plugins:latest \
   bash -c "cd /work && ./test_plugins.sh"
 ```
 
@@ -268,24 +254,14 @@ The script will generate:
 
 ## Check gst-inspect-1.0
 ```bash
-# CPU plugin (no GPU needed)
-docker run --rm \
-  -e GST_PLUGIN_PATH=/plugins \
-  -v "$PWD/mp-out/plugins:/plugins" \
-  ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 \
-  gst-inspect-1.0 mozza_mp
-
-# GPU plugin
-docker run --rm --gpus all mp_plugins_test:latest gst-inspect-1.0 mozza_mp_gpu
+docker run --rm --gpus all mp_plugins:latest gst-inspect-1.0 mozza_mp_gpu
 ```
 
 ## Process a video with CPU (deformation)
 ```bash
 docker run --rm \
   -v "$PWD:/work" -v "$PWD/env:/models" \
-  -e GST_PLUGIN_PATH=/work/mp-out/plugins \
-  -e LD_LIBRARY_PATH=/work/mp-out/lib:/opt/gstreamer/lib/x86_64-linux-gnu \
-  ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 \
+  mp_plugins:latest \
   gst-launch-1.0 -q \
     filesrc location=/work/assets/video_example.mp4 ! decodebin ! videoconvert ! \
     video/x-raw,format=RGBA ! \
@@ -299,7 +275,7 @@ docker run --rm \
 ```bash
 docker run --rm --gpus all \
   -v "$PWD:/work" -v "$PWD/env:/models" \
-  mp_plugins_test:latest \
+  mp_plugins:latest \
   gst-launch-1.0 -q \
     filesrc location=/work/assets/video_example.mp4 ! decodebin ! videoconvert ! \
     video/x-raw,format=RGBA ! \

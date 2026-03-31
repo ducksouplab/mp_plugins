@@ -1,47 +1,83 @@
-# Build both plugins *inside* the MediaPipe workspace so labels like
-#   //mediapipe/... work and we avoid Bzlmod/local_repository mismatches.
-# This Dockerfile expects these directories in your repo root:
-#   gstfacelandmarks/ , gstmozzamp/ , gstshared/ , (optional) imgwarp/
-# Each contains its own BUILD file.
+# Unified Dockerfile for Mediapipe GStreamer plugins
+# This image contains all plugins (facelandmarks, mozza_mp, mozza_mp_gpu)
+# and their runtime dependencies.
 
+# ── Stage 1: Build ──
 FROM ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 AS builder
 
 ARG MEDIAPIPE_TAG=v0.10.26
 ARG BAZEL_VERSION=6.5.0
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Toolchain + headers we need at build time
+# Toolchain + headers
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git pkg-config build-essential \
     python3 python3-numpy libglib2.0-dev \
     libopencv-dev \
     libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dev \
+    libminizip-dev zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# CUDA Toolkit + TensorRT
+RUN bash -eux <<'BASH'
+curl -L -O https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
+dpkg -i cuda-keyring_1.1-1_all.deb
+rm cuda-keyring_1.1-1_all.deb
+apt-get update
+apt-get install -y --no-install-recommends \
+    cuda-nvcc-12-3 cuda-cudart-dev-12-3 \
+    libnvinfer-dev libnvinfer-plugin-dev libnvonnxparsers-dev
+if [ -d /usr/local/cuda-12.3 ]; then
+  ln -sf /usr/local/cuda-12.3 /usr/local/cuda
+fi
+rm -rf /var/lib/apt/lists/*
+BASH
 
 # Bazel
 RUN curl -fsSL -o /usr/local/bin/bazel \
       https://releases.bazel.build/${BAZEL_VERSION}/release/bazel-${BAZEL_VERSION}-linux-x86_64 \
  && chmod +x /usr/local/bin/bazel
 
-# 1) Clone MediaPipe (we build *inside* this workspace)
+# Clone MediaPipe
 WORKDIR /opt
 RUN git clone --depth=1 --branch ${MEDIAPIPE_TAG} \
       https://github.com/google-ai-edge/mediapipe.git mediapipe-src
 
-# 2) Copy your plugin sources into the mediapipe workspace
 WORKDIR /opt/mediapipe-src
 
+# Patch WORKSPACE
+RUN cat >> WORKSPACE <<'EOF'
+new_local_repository(
+    name = "cuda",
+    path = "/usr/local/cuda",
+    build_file_content = """
+cc_library(
+    name = "cuda_headers",
+    hdrs = glob(["include/**/*.h", "include/**/*.hpp"]),
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
+cc_library(
+    name = "cudart",
+    srcs = ["lib64/libcudart.so"],
+    visibility = ["//visibility:public"],
+)
+""",
+)
+EOF
+
+# Patch EGL
 RUN sed -i -E 's/EGL_DEPTH_SIZE,[[:space:]]*16/EGL_DEPTH_SIZE, 0/g' mediapipe/gpu/gl_context_egl.cc && \
     sed -i -E 's/EGL_STENCIL_SIZE,[[:space:]]*8/EGL_STENCIL_SIZE, 0/g' mediapipe/gpu/gl_context_egl.cc
 
+# Copy sources
 COPY gstfacelandmarks/ gstfacelandmarks/
 COPY gstmozzamp/       gstmozzamp/
 COPY gstshared/        gstshared/
-# If you keep a top-level imgwarp/ in your repo, copy it beneath gstmozzamp/
-# If you already have gstmozzamp/imgwarp in your repo, comment this next line.
 COPY imgwarp/          gstmozzamp/imgwarp/
+COPY gstmozzamp_gpu/   gstmozzamp_gpu/
 
-# 3) Provide a tiny Bazel package with GLib/GStreamer headers so our BUILDs can depend on it
+# GStreamer headers for Bazel
 RUN bash -eux <<'BASH'
 mkdir -p third_party/sysroot_gst/include \
          third_party/sysroot_gst/lib/glib-2.0/include
@@ -82,10 +118,11 @@ cc_library(
 EOF
 BASH
 
-# 4) Bazel config
+# Bazel config
 RUN printf '%s\n' \
   'common --experimental_repo_remote_exec' \
   'common --repo_env=HERMETIC_PYTHON_VERSION=3.11' \
+  'build --spawn_strategy=local' \
   'build --define xnn_enable_avxvnniint8=false' \
   'build --cxxopt=-std=gnu++17 --host_cxxopt=-std=gnu++17' \
   'build --cxxopt=-I/usr/include/opencv4' \
@@ -96,22 +133,36 @@ RUN printf '%s\n' \
 
 RUN sed -i 's/constexpr int kDelegateFallbackDefaultNumThreads = -1;/constexpr int kDelegateFallbackDefaultNumThreads = 4;/g' mediapipe/calculators/tensor/inference_calculator_cpu.cc || true
 
-# 5) Build both plugins inside the Mediapipe workspace
+# Build ALL plugins
 RUN set -eux; \
   bazel clean --expunge; \
   bazel build -c opt --copt=-O3 \
     //gstshared:libmp_runtime.so \
     //gstfacelandmarks:libgstfacelandmarks.so \
-    //gstmozzamp:libgstmozzamp.so; \
+    //gstmozzamp:libgstmozzamp.so \
+    //gstmozzamp_gpu:libgstmozzampgpu.so; \
   bbin="$(bazel info -c opt bazel-bin)"; \
   install -D -m0755 "$bbin/gstshared/libmp_runtime.so"               /out/lib/libmp_runtime.so; \
   install -D -m0755 "$bbin/gstfacelandmarks/libgstfacelandmarks.so" /out/plugins/libgstfacelandmarks.so; \
   install -D -m0755 "$bbin/gstmozzamp/libgstmozzamp.so"             /out/plugins/libgstmozzamp.so; \
-  export GST_PLUGIN_PATH=/out/plugins:/opt/gstreamer/lib/x86_64-linux-gnu/gstreamer-1.0; \
-  export GST_REGISTRY=/tmp/gst-registry.bin; export GST_REGISTRY_FORK=no; \
-  GST_DEBUG=GST_PLUGIN_LOADING:3 gst-inspect-1.0 facelandmarks || true; \
-  GST_DEBUG=GST_PLUGIN_LOADING:3 gst-inspect-1.0 mozza_mp || true
+  install -D -m0755 "$bbin/gstmozzamp_gpu/libgstmozzampgpu.so"     /out/plugins/libgstmozzamp_gpu.so
 
-# 6) Export just the compiled artifacts
+# ── Stage 2: Runtime ──
+FROM ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 AS runtime
+
+# Copy build artifacts
+COPY --from=builder /out/lib/libmp_runtime.so /usr/local/lib/
+COPY --from=builder /out/plugins/*.so /usr/local/lib/gstreamer-1.0/
+
+ENV GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0:/opt/gstreamer/lib/x86_64-linux-gnu/gstreamer-1.0
+ENV LD_LIBRARY_PATH=/usr/local/lib:/opt/gstreamer/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+ENV PATH=/opt/gstreamer/bin:$PATH
+
+RUN ldconfig
+
+# Default image is the runtime image
+ENTRYPOINT ["/bin/bash"]
+
+# (Optional) Artifact export target
 FROM scratch AS artifacts
-COPY --from=builder /out /out
+COPY --from=builder /out/ .
