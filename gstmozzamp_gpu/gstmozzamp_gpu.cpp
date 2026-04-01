@@ -58,9 +58,8 @@ struct OneEuroFilter {
   float min_cutoff, beta, d_cutoff;
   bool first_time = true;
   float x_prev, dx_prev;
-  // min_cutoff: lower = more smoothing at rest (less jitter), more lag
-  // beta: higher = faster response to motion (less lag at speed)
-  OneEuroFilter() : min_cutoff(0.5f), beta(0.007f), d_cutoff(1.0f) {}
+  // Increase default snappy responsiveness (1.0Hz cutoff, 0.01 beta)
+  OneEuroFilter() : min_cutoff(1.0f), beta(0.01f), d_cutoff(1.0f) {}
   float alpha(float cutoff, float dt) {
     float r = 2.0f * M_PI * cutoff * dt;
     return r / (r + 1.0f);
@@ -931,13 +930,13 @@ static void gst_mozza_mp_gpu_class_init(GstMozzaMpGpuClass* klass) {
   g_object_class_install_property(
       gobject_class, PROP_MIN_CUTOFF,
       g_param_spec_float("min-cutoff", "Min cutoff frequency",
-                         "OneEuroFilter min_cutoff: lower = more smoothing at rest (less jitter, more lag). Default 1.5 Hz.",
-                         0.001f, 100.0f, 1.5f, G_PARAM_READWRITE));
+                         "OneEuroFilter min_cutoff: lower = more smoothing at rest (less jitter, more lag). Default 1.0 Hz.",
+                         0.001f, 100.0f, 1.0f, G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_BETA,
       g_param_spec_float("beta", "Beta (cutoff slope)",
-                         "OneEuroFilter beta: higher = less lag at high speeds. Default 0.05.",
-                         0.0f, 1.0f, 0.05f, G_PARAM_READWRITE));
+                         "OneEuroFilter beta: higher = less lag at high speeds. Default 0.01.",
+                         0.0f, 1.0f, 0.01f, G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_SMOOTH_LANDMARKS,
       g_param_spec_boolean("smooth-landmarks", "Smooth Landmarks",
@@ -989,8 +988,8 @@ static void gst_mozza_mp_gpu_init(GstMozzaMpGpu* self) {
   self->show_landmarks = FALSE;
   self->no_warp = FALSE;
   self->smooth = 0.5f;
-  self->min_cutoff = 1.5f;
-  self->beta = 0.05f;
+  self->min_cutoff = 1.0f;
+  self->beta = 0.01f;
   self->smooth_landmarks = TRUE;
   self->warp_mode = WARP_GLOBAL;
   self->roi_pad = 24;
