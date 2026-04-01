@@ -90,9 +90,15 @@ struct _GstMozzaMp {
   std::optional<Deformations> dfm;
   std::unique_ptr<mp_imgwarp::ImgWarp_MLS_Rigid> mls;
 
-  // stats
+  // Stats
   guint64 frame_count;
-};
+
+  // Timing
+  double sum_detect_us;
+  double sum_warp_us;
+  guint64 timing_count;
+  };
+
 
 G_END_DECLS
 
@@ -401,6 +407,9 @@ static gboolean gst_mozza_mp_start(GstBaseTransform* base) {
   }
 
   self->frame_count = 0;
+  self->sum_detect_us = 0;
+  self->sum_warp_us = 0;
+  self->timing_count = 0;
   return TRUE;
 }
 
@@ -520,17 +529,18 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
                     (unsigned long long)self->frame_count, GST_TIME_ARGS(pts), (long long)ts_us, (long long)(ts_us / 1000));
   }
 
-  auto t0 = std::chrono::steady_clock::now();
+  const bool do_timing =
+      self->log_every > 0 &&
+      gst_debug_category_get_threshold(GST_CAT_DEFAULT) >= GST_LEVEL_INFO;
+
+  std::chrono::steady_clock::time_point t_detect_start, t_detect_end, t_warp_end;
+
+  if (do_timing) t_detect_start = std::chrono::steady_clock::now();
+
   MpFaceResult out;
   int rc = MpApi().face_detect(self->mp_ctx, &img, ts_us, &out);
-  auto t1 = std::chrono::steady_clock::now();
-  auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
-  auto should_log = [&](guint64 frame) -> bool {
-    if (self->log_every == 0) return false;
-    if (self->log_every == 1) return true;
-    return (frame % self->log_every) == 1;
-  };
+  if (do_timing) t_detect_end = std::chrono::steady_clock::now();
 
   if (rc != 0) { MpApi().face_free_result(&out); return GST_FLOW_OK; }
 
@@ -541,11 +551,6 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
   }
 
   const MpFace& f0 = out.faces[0];
-  if (should_log(self->frame_count)) {
-    GST_INFO_OBJECT(self, "faces=%d landmarks=%d (detect %.3f ms, ts_us=%lld)", out.faces_count, f0.landmarks_count, us / 1000.0, (long long)ts_us);
-    log_landmark_stats(self, f0, W, H);
-  }
-
   std::vector<cv::Point2f> L; L.reserve(f0.landmarks_count);
   for (int i = 0; i < f0.landmarks_count; ++i) L.emplace_back(f0.landmarks[i].x * W, f0.landmarks[i].y * H);
 
@@ -576,6 +581,31 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
           if (!warped.empty()) warped.copyTo(img_rgba);
         }
       }
+    }
+  }
+
+  if (do_timing) {
+    t_warp_end = std::chrono::steady_clock::now();
+    
+    auto us_diff = [](std::chrono::steady_clock::time_point a,
+                      std::chrono::steady_clock::time_point b) -> double {
+      return (double)std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+    };
+    self->sum_detect_us += us_diff(t_detect_start, t_detect_end);
+    self->sum_warp_us   += us_diff(t_detect_end,   t_warp_end);
+    self->timing_count++;
+
+    if (self->timing_count % self->log_every == 0) {
+      double n = (double)self->log_every;
+      double detect_ms = self->sum_detect_us / n / 1000.0;
+      double warp_ms   = self->sum_warp_us   / n / 1000.0;
+      double total_ms  = detect_ms + warp_ms;
+      GST_INFO_OBJECT(self,
+          "TIMING frame=%llu (window avg)  MP-detect=%.2fms  warp=%.2fms  total=%.2fms  (%.0f fps)",
+          (unsigned long long)self->timing_count,
+          detect_ms, warp_ms, total_ms,
+          total_ms > 0.0 ? 1000.0 / total_ms : 0.0);
+      self->sum_detect_us = 0; self->sum_warp_us = 0;
     }
   }
 

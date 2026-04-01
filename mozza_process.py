@@ -152,6 +152,8 @@ def transform_file(
         "-v", f"{input_dir}:{docker_workdir}",
         "-v", f"{model_dir}:/models",
     ]
+    if os.getenv("GST_DEBUG"):
+        docker_cmd.extend(["-e", f"GST_DEBUG={os.getenv('GST_DEBUG')}"])
     
     # If output_dir is different from input_dir, we need to handle it.
     # A simple way is to mount output_dir to /output_dir in docker.
