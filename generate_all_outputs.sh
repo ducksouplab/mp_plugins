@@ -24,9 +24,7 @@ for asset in "${ASSETS[@]}"; do
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
     echo "Mode: $mode | Input: $asset -> output/$target_name"
-    python3 mozza_process.py --input "$asset" --output "$target_name" --mode "landmarks" --model-path face_landmarker.task
-    [ -f "assets/${target_name}" ] && mv -f "assets/${target_name}" "output/${target_name}"
-    [ -f "${target_name}" ] && mv -f "${target_name}" "output/${target_name}"
+    python3 mozza_process.py --input "$asset" --output "output/$target_name" --mode "landmarks" --model-path face_landmarker.task
 
     # Mode 2: CPU Smile (Comparison)
     echo "--------------------------------------------------------"
@@ -34,9 +32,7 @@ for asset in "${ASSETS[@]}"; do
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
     echo "Mode: $mode | Input: $asset -> output/$target_name"
-    python3 mozza_process.py --input "$asset" --output "$target_name" --mode "cpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
-    [ -f "assets/${target_name}" ] && mv -f "assets/${target_name}" "output/${target_name}"
-    [ -f "${target_name}" ] && mv -f "${target_name}" "output/${target_name}"
+    python3 mozza_process.py --input "$asset" --output "output/$target_name" --mode "cpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
 
     # Mode 3: GPU Smile (Comparison)
     echo "--------------------------------------------------------"
@@ -44,9 +40,7 @@ for asset in "${ASSETS[@]}"; do
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
     echo "Mode: $mode | Input: $asset -> output/$target_name"
-    python3 mozza_process.py --input "$asset" --output "$target_name" --mode "gpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
-    [ -f "assets/${target_name}" ] && mv -f "assets/${target_name}" "output/${target_name}"
-    [ -f "${target_name}" ] && mv -f "${target_name}" "output/${target_name}"
+    python3 mozza_process.py --input "$asset" --output "output/$target_name" --mode "gpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
 
 done
 
