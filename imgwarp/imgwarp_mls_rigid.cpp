@@ -54,9 +54,10 @@ void ImgWarp_MLS_Rigid::calcDelta() {
                 ratio = 1.0;
             }
         }
-    }
+        }
 
-    rDx.create(tarH, tarW);
+        rDx.create(tarH, tarW);
+
     rDy.create(tarH, tarW);
 
     if (nPoint < 2) {

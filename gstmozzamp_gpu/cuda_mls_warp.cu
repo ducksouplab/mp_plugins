@@ -32,12 +32,11 @@ __global__ void mls_rigid_delta_kernel(
     const float* __restrict__ d_oldPts,  // dst points (interleaved x,y)
     const float* __restrict__ d_newPts,  // src points (interleaved x,y)
     int nPoint,
-    int tarW, int tarH,
+    int rw, int rh,
     int gridSize,
     float alpha_param,
     float ratio,
-    int rx, int ry,
-    int gridW, int gridH)       // pre-scale ratio (1.0 if disabled)
+    int gridW, int gridH)
 {
   // Load control points into shared memory
   __shared__ float s_oldX[MAX_CTRL_POINTS];
@@ -62,14 +61,13 @@ __global__ void mls_rigid_delta_kernel(
 
   if (gi >= gridW || gj >= gridH) return;
 
-  // Map grid index to pixel coordinate (matching CPU loop logic)
-  // i and j are absolute coordinates in the image.
-  int i = rx + gi * gridSize;
-  int j = ry + gj * gridSize;
+  // i and j are coordinates relative to ROI (match CPU)
+  int i = gi * gridSize;
+  int j = gj * gridSize;
 
-  // Clamp to image bounds (matches CPU edge handling)
-  if (i >= tarW) i = tarW - 1;
-  if (j >= tarH) j = tarH - 1;
+  // Clamp to ROI bounds (matches CPU)
+  if (i >= rw) i = rw - 1;
+  if (j >= rh) j = rh - 1;
 
   // --- MLS Rigid algorithm (exact port of CPU) ---
   float sw = 0.0f;
@@ -192,10 +190,10 @@ __global__ void mls_warp_kernel(
   int ly = blockIdx.y * blockDim.y + threadIdx.y;
   if (lx >= rw || ly >= rh) return;
 
-  int x = rx + lx;
-  int y = ry + ly;
+  // lx and ly are coordinates relative to ROI.
+  // Displacement field (d_rDx, d_rDy) is also relative to ROI.
 
-  // Find enclosing grid cell relative to ROI
+  // Find enclosing grid cell
   int gi = lx / gridSize;
   int gj = ly / gridSize;
   int gi1 = min(gi + 1, gridW - 1);
@@ -224,8 +222,8 @@ __global__ void mls_warp_kernel(
                  (dy10 * (1 - fy) + dy11 * fy) * fx;
 
   // Source coordinate
-  float srcX = (float)x + deltaX * transRatio;
-  float srcY = (float)y + deltaY * transRatio;
+  float srcX = (float)(rx + lx) + deltaX * transRatio;
+  float srcY = (float)(ry + ly) + deltaY * transRatio;
 
   // Clamp
   srcX = fmaxf(0.0f, fminf(srcX, (float)(W - 1)));
@@ -244,7 +242,9 @@ __global__ void mls_warp_kernel(
   const uint8_t* p01 = d_src + sy1 * srcPitch + sx0 * 4;
   const uint8_t* p11 = d_src + sy1 * srcPitch + sx1 * 4;
 
-  uint8_t* out = d_dst + y * dstPitch + x * 4;
+  int dst_x = rx + lx;
+  int dst_y = ry + ly;
+  uint8_t* out = d_dst + dst_y * dstPitch + dst_x * 4;
 
   #pragma unroll
   for (int c = 0; c < 4; ++c) {
@@ -363,8 +363,8 @@ void CudaMlsWarp::warp(const uint8_t* d_src_rgba, uint8_t* d_dst_rgba,
     dim3 grid((gridW + block.x - 1) / block.x,
               (gridH + block.y - 1) / block.y);
     mls_rigid_delta_kernel<<<grid, block, 0, stream>>>(
-        d_rDx_, d_rDy_, d_oldPts_, d_newPts_, nPoints, width, height,
-        gridSize, cfg_.alpha, ratio, rx, ry, gridW, gridH);
+        d_rDx_, d_rDy_, d_oldPts_, d_newPts_, nPoints, rw, rh,
+        gridSize, cfg_.alpha, ratio, gridW, gridH);
   }
 
   // Kernel 2: Apply warp (bilinear interp of displacement + texture sampling)

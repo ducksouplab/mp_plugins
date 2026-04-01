@@ -5,7 +5,6 @@ mkdir -p output
 
 # List of assets to process
 ASSETS=("assets/dynamic_video.mp4" "assets/test_image.jpg" "assets/video_example.mp4")
-MODES=("landmarks" "cpu" "gpu")
 
 echo "Starting batch transformation of all assets..."
 
@@ -19,30 +18,36 @@ for asset in "${ASSETS[@]}"; do
     name="${filename%.*}"
     ext="${filename##*.}"
     
-    for mode in "${MODES[@]}"; do
-        # Determine output extension (images to PNG)
-        out_ext="$ext"
-        if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then
-             out_ext="png"
-        fi
-        
-        target_name="${name}_${mode}.${out_ext}"
-        output_path="output/${target_name}"
-        
-        echo "--------------------------------------------------------"
-        echo "Mode: $mode | Input: $asset -> $output_path"
-        
-        # Run the wrapper
-        # Note: mozza_process.py might save to 'assets/' due to its mount logic
-        python3 mozza_process.py --input "$asset" --output "$target_name" --mode "$mode" --deform smile.dfm --model-path face_landmarker.task
-        
-        # Cleanup move if it landed in the wrong spot
-        if [ -f "assets/${target_name}" ]; then
-            mv -f "assets/${target_name}" "$output_path"
-        elif [ -f "${target_name}" ]; then
-            mv -f "${target_name}" "$output_path"
-        fi
-    done
+    # Mode 1: Just Landmarks (for tracking verification)
+    echo "--------------------------------------------------------"
+    mode="landmarks"
+    target_name="${name}_${mode}.mp4"
+    if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
+    echo "Mode: $mode | Input: $asset -> output/$target_name"
+    python3 mozza_process.py --input "$asset" --output "$target_name" --mode "landmarks" --model-path face_landmarker.task
+    [ -f "assets/${target_name}" ] && mv -f "assets/${target_name}" "output/${target_name}"
+    [ -f "${target_name}" ] && mv -f "${target_name}" "output/${target_name}"
+
+    # Mode 2: CPU Smile (Comparison)
+    echo "--------------------------------------------------------"
+    mode="cpu_smile"
+    target_name="${name}_${mode}.mp4"
+    if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
+    echo "Mode: $mode | Input: $asset -> output/$target_name"
+    python3 mozza_process.py --input "$asset" --output "$target_name" --mode "cpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
+    [ -f "assets/${target_name}" ] && mv -f "assets/${target_name}" "output/${target_name}"
+    [ -f "${target_name}" ] && mv -f "${target_name}" "output/${target_name}"
+
+    # Mode 3: GPU Smile (Comparison)
+    echo "--------------------------------------------------------"
+    mode="gpu_smile"
+    target_name="${name}_${mode}.mp4"
+    if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
+    echo "Mode: $mode | Input: $asset -> output/$target_name"
+    python3 mozza_process.py --input "$asset" --output "$target_name" --mode "gpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
+    [ -f "assets/${target_name}" ] && mv -f "assets/${target_name}" "output/${target_name}"
+    [ -f "${target_name}" ] && mv -f "${target_name}" "output/${target_name}"
+
 done
 
 echo "--------------------------------------------------------"

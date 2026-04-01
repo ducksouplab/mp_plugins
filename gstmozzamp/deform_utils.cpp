@@ -85,10 +85,13 @@ void compute_MLS_on_ROI(cv::Mat& imgRGBA, mp_imgwarp::ImgWarp_MLS_Rigid& mls,
   roi &= cv::Rect(0,0,imgRGBA.cols,imgRGBA.rows);
   if (roi.empty()) return;
 
-  // Localize control points into the patch
   std::vector<cv::Point2f> sL, dL;
   sL.reserve(src.size() + 64);
   dL.reserve(dst.size() + 64);
+
+  // We need to know what ratio the internal MLS used
+  // (Assuming ratio logic inside ImgWarp_MLS_Rigid is consistent)
+  
   for (size_t i=0;i<src.size();++i) {
     sL.emplace_back(src[i].x - roi.x, src[i].y - roi.y);
     dL.emplace_back(dst[i].x - roi.x, dst[i].y - roi.y);

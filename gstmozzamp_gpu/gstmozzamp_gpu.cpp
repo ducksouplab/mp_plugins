@@ -681,41 +681,62 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
         for (size_t g = 0; g < srcGroups.size(); ++g) {
           auto& sg = srcGroups[g];
           auto& dg = dstGroups[g];
-          float minx = (float)W, miny = (float)H, maxx = 0, maxy = 0;
+          
+          // ROI = union of before/after + pad (match CPU tight_bounds_union)
+          float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
           for (auto& p : sg) { minx = std::min(minx, p.x); maxx = std::max(maxx, p.x); miny = std::min(miny, p.y); maxy = std::max(maxy, p.y); }
           for (auto& p : dg) { minx = std::min(minx, p.x); maxx = std::max(maxx, p.x); miny = std::min(miny, p.y); maxy = std::max(maxy, p.y); }
 
-          int rx = std::max(0, (int)minx - self->roi_pad);
-          int ry = std::max(0, (int)miny - self->roi_pad);
-          int rw = std::min(W - rx, (int)(maxx - minx) + 2 * self->roi_pad);
-          int rh = std::min(H - ry, (int)(maxy - miny) + 2 * self->roi_pad);
-          if (rw <= 0 || rh <= 0) continue;
+          int rx = std::max(0, (int)std::floor(minx) - self->roi_pad);
+          int ry = std::max(0, (int)std::floor(miny) - self->roi_pad);
+          int rX_max = std::min(W - 1, (int)std::ceil(maxx) + self->roi_pad);
+          int rY_max = std::min(H - 1, (int)std::ceil(maxy) + self->roi_pad);
+          int rw = std::max(1, rX_max - rx + 1);
+          int rh = std::max(1, rY_max - ry + 1);
 
-          std::vector<cv::Point2f> src = sg, dst = dg;
-          add_identity_anchors_roi(rx, ry, rw, rh, self->mls_grid, src, dst);
+          // Enforce minimum patch (match CPU compute_MLS_on_ROI)
+          const int gsize = std::max(self->mls_grid, 2);
+          int midX = rx + rw/2, midY = ry + rh/2;
+          int min_rx = std::max(0, midX - gsize);
+          int min_ry = std::max(0, midY - gsize);
+          int min_rX = std::min(W - 1, midX + gsize);
+          int min_rY = std::min(H - ry, midY + gsize);
+          
+          rx = std::min(rx, min_rx);
+          ry = std::min(ry, min_ry);
+          rw = std::max(rx + rw, min_rX + 1) - rx;
+          rh = std::max(ry + rh, min_rY + 1) - ry;
+          rw = std::min(W - rx, rw);
+          rh = std::min(H - ry, rh);
 
-          // Anchor other landmarks inside ROI to prevent "bleeding" into eyes/nose
-          for (const auto& p : L) {
-            if (p.x >= rx && p.x < rx + rw && p.y >= ry && p.y < ry + rh) {
-              // Check if this point is already being moved
-              bool moving = false;
-              for (const auto& sp : sg) {
-                if (std::abs(p.x - sp.x) < 0.1f && std::abs(p.y - sp.y) < 0.1f) {
-                  moving = true; break;
-                }
-              }
-              if (!moving) {
-                src.push_back(p); dst.push_back(p);
-              }
-            }
+          if (rw <= 1 || rh <= 1) continue;
+
+          // Localize control points (match CPU)
+          std::vector<float> h_src_xy, h_dst_xy;
+          h_src_xy.reserve((sg.size() + 64) * 2);
+          h_dst_xy.reserve((dg.size() + 64) * 2);
+          
+          for (size_t i = 0; i < sg.size(); ++i) {
+            h_src_xy.push_back(sg[i].x - rx); h_src_xy.push_back(sg[i].y - ry);
+            h_dst_xy.push_back(dg[i].x - rx); h_dst_xy.push_back(dg[i].y - ry);
           }
 
-          int nPts = (int)src.size();
-          std::vector<float> h_src_xy(nPts * 2), h_dst_xy(nPts * 2);
-          for (int i = 0; i < nPts; ++i) {
-            h_src_xy[i * 2 + 0] = src[i].x; h_src_xy[i * 2 + 1] = src[i].y;
-            h_dst_xy[i * 2 + 0] = dst[i].x; h_dst_xy[i * 2 + 1] = dst[i].y;
+          // Localized border pins (match CPU exactly)
+          const int step = std::max(4, gsize * 2);
+          for (int x = 0; x < rw; x += step) {
+            h_src_xy.push_back((float)x); h_src_xy.push_back(0.0f);
+            h_dst_xy.push_back((float)x); h_dst_xy.push_back(0.0f);
+            h_src_xy.push_back((float)x); h_src_xy.push_back((float)rh - 1);
+            h_dst_xy.push_back((float)x); h_dst_xy.push_back((float)rh - 1);
           }
+          for (int y = step; y < rh - step; y += step) {
+            h_src_xy.push_back(0.0f);        h_src_xy.push_back((float)y);
+            h_dst_xy.push_back(0.0f);        h_dst_xy.push_back((float)y);
+            h_src_xy.push_back((float)rw - 1); h_src_xy.push_back((float)y);
+            h_dst_xy.push_back((float)rw - 1); h_dst_xy.push_back((float)y);
+          }
+
+          int nPts = (int)h_src_xy.size() / 2;
           self->cuda_warp->warp(self->d_frame_in, self->d_frame_out, W, H, self->alloc_pitch, self->alloc_pitch, h_src_xy.data(), h_dst_xy.data(), nPts, rx, ry, rw, rh, self->cuda_stream);
         }
       } else {
