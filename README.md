@@ -185,7 +185,7 @@ docker run --rm --gpus all mp_plugins:latest gst-inspect-1.0 mozza_mp_gpu
 ## Get the .so files from an existing image
 ```bash
 chmod +x get_so_file.sh
-./get_so_file.sh mp_plugins_gpu:latest
+./get_so_file.sh mp_plugins:latest
 ```
 
 ## Move the .so to DuckSoup
@@ -301,15 +301,9 @@ docker run --rm --gpus all \
 
 
 # Update MediaPipe version
-Change `ARG MEDIAPIPE_TAG=v0.10.26` at the top of `Dockerfile.gpu` then rebuild:
+Change `ARG MEDIAPIPE_TAG=v0.10.26` at the top of `Dockerfile` then rebuild:
 ```bash
-DOCKER_BUILDKIT=1 docker build --no-cache -f Dockerfile.gpu \
-  --output type=local,dest=mp-out -t mp_plugins:latest .
-
-#Or without cache
-CKER_BUILDKIT=1 docker build -f Dockerfile.gpu \
-  --output type=local,dest=mp-out -t mp_plugins:latest .
-
+DOCKER_BUILDKIT=1 docker build --no-cache -t mp_plugins:latest .
 ```
 
 # Python Wrapper: mozza_process.py
@@ -317,27 +311,27 @@ We provide a Python wrapper that simplifies processing images and videos by auto
 
 ### Prerequisites
 - Python 3
-- Docker (with NVIDIA Container Toolkit for GPU mode), prefer CPU if no need of Real Time processing—this will be easier to execute.
-- Get the .task model if you haven't
-```
+- Docker (with NVIDIA Container Toolkit for GPU mode).
+- Get the .task model if you haven't:
+```bash
 chmod +x download_face_landmarker_model.sh
 ./download_face_landmarker_model.sh
 ```
 
-- For GPU, see convert models, below.
+- **For GPU:** You also need the ONNX models (`face_detector.onnx`, `face_landmarks.onnx`) in the same directory as the `.task` file.
 
 ### Basic Usage
 ```bash
-# Process a video using GPU (deformation, no landmark overlay)
-python3 mozza_process.py --input assets/video_example.mp4 --output assets/output.mp4 \
+# Process a video using GPU (deformation, alpha=2.0, no landmark overlay)
+python3 mozza_process.py --input assets/video_example.mp4 --output output/gpu_smile.mp4 \
   --mode gpu --deform smile.dfm --alpha 2.0 --warp-mode per-group-roi --show-landmarks false
 
 # Process a video using CPU (deformation)
-python3 mozza_process.py --input assets/video_example.mp4 --output assets/output.mp4 \
-  --mode cpu --deform smile.dfm --alpha 1.5 --warp-mode per-group-roi --show-landmarks false
+python3 mozza_process.py --input assets/video_example.mp4 --output output/cpu_smile.mp4 \
+  --mode cpu --deform smile.dfm --alpha 2.0 --warp-mode per-group-roi --show-landmarks false
 
 # Show landmark tracking only (no deformation)
-python3 mozza_process.py --input assets/video_example.mp4 --output assets/landmarks.mp4 \
+python3 mozza_process.py --input assets/video_example.mp4 --output output/landmarks.mp4 \
   --mode gpu --no-warp true --show-landmarks true
 ```
 
@@ -345,19 +339,22 @@ python3 mozza_process.py --input assets/video_example.mp4 --output assets/landma
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--input` | required | Input image or video file path. |
-| `--output` | required | Output file path (extension added automatically if missing). |
+| `--output` | required | Output file path. |
 | `--mode` | `gpu` | `gpu`, `cpu`, or `landmarks`. |
-| `--docker-image` | `mp_plugins_test:latest` | Docker image for GPU mode. |
+| `--docker-image` | `mp_plugins:latest` | Docker image to use. |
 | `--deform` | none | Path to `.dfm` deformation file. |
-| `--alpha` | 1.0 | Deformation intensity. |
-| `--warp-mode` | `global` | `global` or `per-group-roi` (recommended for CPU). GPU uses `0`/`1` internally. |
+| `--alpha` | 1.0 | Deformation intensity multiplier. |
+| `--warp-mode` | `global` | `global` or `per-group-roi` (recommended for parity). |
 | `--show-landmarks` | `true` | `true` or `false` — draw landmark dots on output. |
 | `--no-warp` | `false` | `true` to skip MLS warping (landmark tracking only). |
 | `--model-path` | `face_landmarker.task` | Path to `.task` model. |
-| `--smooth` | 0.5 | Temporal EMA smoothing on ROI (GPU only, 0=off). |
+| `--smooth` | 0.5 | Temporal smoothing on ROI (GPU only, 0=off). |
 | `--verbose` | false | Print the full Docker and GStreamer commands. |
 
 Run `python3 mozza_process.py --help` for the full list of supported parameters.
+
+# Tutorial
+For a step-by-step guide on how to use these plugins from scratch using Python, check out our [Tutorial Notebook](tutorial/tutorial.ipynb).
 
 # References
 • MediaPipe Face Landmarker task & models (C++/Tasks, .task bundle, running modes).
