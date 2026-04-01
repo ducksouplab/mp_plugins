@@ -13,7 +13,7 @@ def run_command(cmd, verbose=False):
         print(f"Error executing command: {e}", file=sys.stderr)
         raise e
 
-def process_media(
+def transform_file(
     input_path,
     output_path,
     mode="gpu",
@@ -211,7 +211,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        process_media(
+        transform_file(
             input_path=args.input,
             output_path=args.output,
             mode=args.mode,
