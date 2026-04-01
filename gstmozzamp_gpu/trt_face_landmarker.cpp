@@ -156,8 +156,8 @@ struct TrtFaceLandmarker::Impl {
 
   // ROI One-Euro smoothing state
   struct RoiOneEuroFilter {
-    // Increase responsiveness: 1.0Hz base cutoff, 0.01 beta for fast motion follow.
-    float min_cutoff = 1.0f, beta = 0.01f, d_cutoff = 1.0f;
+    // Aggressive responsiveness: 2.0Hz base cutoff, 0.05 beta for instant motion follow.
+    float min_cutoff = 2.0f, beta = 0.05f, d_cutoff = 1.0f;
     bool first_time = true;
     float x_prev = 0.0f, dx_prev = 0.0f;
     float alpha(float cutoff, float dt) {
