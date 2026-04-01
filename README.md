@@ -54,8 +54,8 @@ A high-performance version of the transformer using NVIDIA TensorRT and custom C
 | `warp-mode` | int | 0 | `0`=global, `1`=per-group-roi. |
 | `roi-pad` | int | 24 | Padding around facial groups in ROI mode. |
 | `smooth` | float | 0.5 | High-level temporal smoothing factor. |
-| `min-cutoff`| float | 1.0 | OneEuroFilter min_cutoff (lower = less jitter). |
-| `beta` | float | 0.01 | OneEuroFilter beta (higher = less lag). |
+| `min-cutoff`| float | 2.0 | OneEuroFilter min_cutoff (lower = less jitter). |
+| `beta` | float | 0.05 | OneEuroFilter beta (higher = less lag). |
 | `show-landmarks`| boolean | false | Draw landmarks over the deformed image. |
 | `gpu-id` | int | 0 | CUDA device index. |
 
@@ -64,6 +64,38 @@ The project uses a two-stage pipeline:
 - **Stage 1 (Detection)**: Uses a BlazeFace SSD model to locate the face and primary keypoints.
 - **Stage 2 (Landmarking)**: Crops the face and runs a high-resolution regressor to find all 478 landmarks.
 - **Transformation**: Uses rule-based `.dfm` files to map source landmarks to target destinations, creating effects like smiles, frowns, or morphology changes via MLS warping.
+
+---
+
+## DFM file format
+Each non-comment line in a `.dfm` file defines one control rule:
+`group, index, t0, t1, t2, a, b, c`
+
+- **`group`**: Integer group ID. Rows with the same ID form one group (used by `warp-mode=per-group-roi`).
+- **`index`**: The landmark index to move (0-477).
+- **`t0, t1, t2`**: Anchor landmark indices used to build a reference target point.
+- **`a, b, c`**: Weights for the anchors.
+
+The destination for the landmark is calculated as:
+`Target = a*L[t0] + b*L[t1] + c*L[t2]`
+`Final_Destination = Current + alpha * (Target - Current)`
+
+### Example: `smile.dfm`
+```text
+# Left corner (61): use two upper-lip/cheek points near-above it (146 and 91)
+0, 61,   146,  91,  61,   -0.55, -0.55,  2.10
+
+# Right corner (291): mirror points (375 and 321)
+1, 291,  375, 321, 291,   -0.55, -0.55,  2.10
+```
+
+---
+
+## Global vs Local ROI Mode
+- **Global (`warp-mode=global`)**: All deformation rules are merged and applied to the entire frame at once. This is simple but can cause background "bending" if landmarks are near the image edge.
+- **Local (`warp-mode=per-group-roi`)**: Each group of rules is processed independently inside a small, tight crop (ROI) around the affected landmarks. This ensures that the deformation **only** affects the face and keeps the rest of the image perfectly still. **Recommended for production.**
+
+---
 
 ## Usage Modes
 - **Within GStreamer**: Use these plugins as standard elements in your pipelines (e.g., `... ! mozza_mp_gpu model=... ! ...`).
@@ -123,7 +155,7 @@ sudo cp -r mp-out/lib /home/deploy/deploy-ducksoup/app/plugins/mp_plugins/lib
 
 Now you can use the plugin within ducksoup using the following arguments:
 ```bash
-
+mozza_mp_gpu deform=/app/plugins/smile_mp.dfm alpha=2 model=/app/plugins/face_landmarker.task warp-mode=1
 ```
 
 # Testing
