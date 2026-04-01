@@ -51,7 +51,7 @@ A high-performance version of the transformer using NVIDIA TensorRT and custom C
 | `alpha` | float | 1.0 | Intensity multiplier for the deformation. |
 | `mls-alpha` | float | 1.4 | MLS rigidity (higher = stiffer skin). |
 | `mls-grid` | int | 5 | Grid size for warping calculation. |
-| `warp-mode` | int | 0 | `0`=global, `1`=per-group-roi. |
+| `warp-mode` | int | 0 | MLS warp strategy: `0`=global, `1`=per-group-roi (recommended). |
 | `roi-pad` | int | 24 | Padding around facial groups in ROI mode. |
 | `smooth` | float | 0.5 | High-level temporal smoothing factor. |
 | `min-cutoff`| float | 2.0 | OneEuroFilter min_cutoff (lower = less jitter). |
