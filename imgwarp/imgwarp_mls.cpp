@@ -60,13 +60,13 @@ Mat ImgWarp_MLS::setAllAndGenerate(const Mat &oriImg,
     setDstPoints(qdst);
 
     if (IMGWARP_DIAG()) {
-      std::fprintf(stderr,
-        "[imgwarp][setAll/int] in=%dx%d c=%d out=%dx%d n=%d grid=%d alpha=%.3f\n",
-        oriImg.cols, oriImg.rows, oriImg.channels(), outW, outH,
-        (int)qsrc.size(), gridSize, alpha);
+      std::cerr << "[imgwarp][setAll/int] in=" << oriImg.cols << "x" << oriImg.rows
+                << " c=" << oriImg.channels() << " out=" << outW << "x" << outH
+                << " n=" << (int)qsrc.size() << " grid=" << gridSize
+                << " alpha=" << alpha << std::endl;
       if ((int)qsrc.size() != (int)qdst.size()) {
-        std::fprintf(stderr, "[imgwarp][setAll/int] WARNING: qsrc.size()=%zu != qdst.size()=%zu\n",
-                     qsrc.size(), qdst.size());
+        std::cerr << "[imgwarp][setAll/int] WARNING: qsrc.size()=" << qsrc.size()
+                  << " != qdst.size()=" << qdst.size() << std::endl;
       }
       double md = 0, mean = 0;
       point_stats(/*old*/oldDotL, /*new*/newDotL, md, mean);

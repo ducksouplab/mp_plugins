@@ -13,6 +13,8 @@
 #include <vector>
 
 #include <cuda_runtime.h>
+#include <functional>
+#include "task_model_extractor.h" // for LogCallback and TrtLogLevel
 
 struct TrtFaceLandmarkerConfig {
   std::string model_path;   // Path to .task bundle or directory with ONNX/engine
@@ -20,6 +22,7 @@ struct TrtFaceLandmarkerConfig {
   bool fp16 = true;         // Use FP16 precision (much faster on NVIDIA GPUs)
   int gpu_id = 0;
   float det_threshold = 0.5f;  // Face detection confidence threshold
+  LogCallback log_cb = nullptr; // Optional callback for logs
 };
 
 struct GpuLandmarkResult {

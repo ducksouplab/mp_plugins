@@ -19,6 +19,9 @@
 #define PACKAGE "facelandmarks"
 #endif
 
+GST_DEBUG_CATEGORY_STATIC(gst_face_landmarks_debug_category);
+#define GST_CAT_DEFAULT gst_face_landmarks_debug_category
+
 G_BEGIN_DECLS
 
 #define GST_TYPE_FACE_LANDMARKS (gst_face_landmarks_get_type())
@@ -218,6 +221,7 @@ static GstFlowReturn gst_face_landmarks_transform_frame_ip(GstVideoFilter* vf,
 
 // ── Class boilerplate ────────────────────────────────────────────────────────
 static void gst_face_landmarks_class_init(GstFaceLandmarksClass* klass) {
+  GST_DEBUG_CATEGORY_INIT(gst_face_landmarks_debug_category, "facelandmarks", 0, "Face Landmarks overlay");
   auto* gobject_class = G_OBJECT_CLASS(klass);
   auto* basetr_class  = GST_BASE_TRANSFORM_CLASS(klass);
   auto* vfilter_class = GST_VIDEO_FILTER_CLASS(klass);

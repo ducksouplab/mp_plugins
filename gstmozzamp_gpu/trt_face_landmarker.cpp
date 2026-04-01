@@ -24,18 +24,40 @@
 #include <sstream>
 #include <vector>
 
+#include <cstdarg>
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
 #endif
+
+namespace {
+// Helper to format logs into a string
+std::string fmt_str(const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  char buf[1024];
+  std::vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  return std::string(buf);
+}
+}
 
 // ── TensorRT logger ──
 
 class TrtLogger : public nvinfer1::ILogger {
  public:
+  LogCallback log_cb;
   void log(Severity severity, const char* msg) noexcept override {
-    if (severity <= Severity::kWARNING) {
-      std::fprintf(stderr, "[TRT %d] %s\n", (int)severity, msg);
+    if (!log_cb) return;
+    TrtLogLevel level = TrtLogLevel::INFO;
+    switch (severity) {
+      case Severity::kINTERNAL_ERROR:
+      case Severity::kERROR:   level = TrtLogLevel::ERROR;   break;
+      case Severity::kWARNING: level = TrtLogLevel::WARNING; break;
+      case Severity::kINFO:    level = TrtLogLevel::INFO;    break;
+      case Severity::kVERBOSE: level = TrtLogLevel::DEBUG;   break;
     }
+    log_cb(level, std::string("[TRT Internal] ") + msg);
   }
 };
 static TrtLogger g_trt_logger;
@@ -80,8 +102,8 @@ static bool write_file(const std::string& path, const void* data, size_t sz) {
   do {                                                                  \
     cudaError_t err = (call);                                           \
     if (err != cudaSuccess) {                                           \
-      std::fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__,      \
-                   __LINE__, cudaGetErrorString(err));                   \
+      std::string msg = fmt_str("CUDA error at %s:%d: %s", __FILE__, __LINE__, cudaGetErrorString(err)); \
+      if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::ERROR, msg); \
       return nullptr;                                                   \
     }                                                                   \
   } while (0)
@@ -90,8 +112,8 @@ static bool write_file(const std::string& path, const void* data, size_t sz) {
   do {                                                                  \
     cudaError_t err = (call);                                           \
     if (err != cudaSuccess) {                                           \
-      std::fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__,      \
-                   __LINE__, cudaGetErrorString(err));                   \
+      std::string msg = fmt_str("CUDA error at %s:%d: %s", __FILE__, __LINE__, cudaGetErrorString(err)); \
+      if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::ERROR, msg); \
     }                                                                   \
   } while (0)
 
@@ -192,18 +214,17 @@ static nvinfer1::ICudaEngine* build_or_load_engine(
 
   // Try loading cached engine
   if (file_exists(cache)) {
-    std::fprintf(stderr, "[TRT] Loading cached engine: %s\n", cache.c_str());
+    if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::INFO, fmt_str("[TRT] Loading cached engine: %s", cache.c_str()));
     auto data = read_file(cache);
     if (!data.empty()) {
       auto* engine = runtime->deserializeCudaEngine(data.data(), data.size());
       if (engine) return engine;
-      std::fprintf(stderr, "[TRT] Cache invalid, rebuilding.\n");
+      if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::WARNING, "[TRT] Cache invalid, rebuilding.");
     }
   }
 
   // Build from ONNX
-  std::fprintf(stderr, "[TRT] Building engine from ONNX: %s (this may take 20-60s)...\n",
-               onnx_path.c_str());
+  if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::INFO, fmt_str("[TRT] Building engine from ONNX: %s (this may take 20-60s)...", onnx_path.c_str()));
 
   auto* builder = nvinfer1::createInferBuilder(g_trt_logger);
   if (!builder) return nullptr;
@@ -217,7 +238,7 @@ static nvinfer1::ICudaEngine* build_or_load_engine(
   auto* parser = nvonnxparser::createParser(*network, g_trt_logger);
   if (!parser->parseFromFile(onnx_path.c_str(),
                              static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
-    std::fprintf(stderr, "[TRT] ONNX parse failed for %s\n", onnx_path.c_str());
+    if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::ERROR, fmt_str("[TRT] ONNX parse failed for %s", onnx_path.c_str()));
     delete parser;
     delete network;
     delete builder;
@@ -230,7 +251,7 @@ static nvinfer1::ICudaEngine* build_or_load_engine(
 
   if (fp16 && builder->platformHasFastFp16()) {
     config->setFlag(nvinfer1::BuilderFlag::kFP16);
-    std::fprintf(stderr, "[TRT] FP16 enabled.\n");
+    if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::INFO, "[TRT] FP16 enabled.");
   }
 
   // Handle dynamic shapes (required for some ONNX models)
@@ -240,15 +261,15 @@ static nvinfer1::ICudaEngine* build_or_load_engine(
     auto* input = network->getInput(i);
     auto dims = input->getDimensions();
     bool input_dynamic = false;
-    std::fprintf(stderr, "[TRT] Input '%s': ", input->getName());
+    std::string dstr;
     for (int d = 0; d < dims.nbDims; ++d) {
-      std::fprintf(stderr, "%d%s", dims.d[d], d == dims.nbDims - 1 ? "" : "x");
+      dstr += std::to_string(dims.d[d]) + (d == dims.nbDims - 1 ? "" : "x");
       if (dims.d[d] == -1) {
         dims.d[d] = 1;  // Default to 1 (e.g. batch size)
         input_dynamic = true;
       }
     }
-    std::fprintf(stderr, " (dynamic=%d)\n", (int)input_dynamic);
+    if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::DEBUG, fmt_str("[TRT] Input '%s': %s (dynamic=%d)", input->getName(), dstr.c_str(), (int)input_dynamic));
     if (input_dynamic) {
       profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMIN, dims);
       profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kOPT, dims);
@@ -257,13 +278,13 @@ static nvinfer1::ICudaEngine* build_or_load_engine(
     }
   }
   if (has_dynamic) {
-    std::fprintf(stderr, "[TRT] Added optimization profile for dynamic shapes.\n");
+    if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::INFO, "[TRT] Added optimization profile for dynamic shapes.");
     config->addOptimizationProfile(profile);
   }
 
   auto* serialized = builder->buildSerializedNetwork(*network, *config);
   if (!serialized) {
-    std::fprintf(stderr, "[TRT] Engine build failed.\n");
+    if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::ERROR, "[TRT] Engine build failed.");
     delete config;
     delete network;
     delete builder;
@@ -272,7 +293,7 @@ static nvinfer1::ICudaEngine* build_or_load_engine(
 
   // Cache to disk
   write_file(cache, serialized->data(), serialized->size());
-  std::fprintf(stderr, "[TRT] Engine cached to: %s\n", cache.c_str());
+  if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::INFO, fmt_str("[TRT] Engine cached to: %s", cache.c_str()));
 
   auto* engine =
       runtime->deserializeCudaEngine(serialized->data(), serialized->size());
@@ -290,6 +311,7 @@ TrtFaceLandmarker::~TrtFaceLandmarker() = default;
 
 std::unique_ptr<TrtFaceLandmarker> TrtFaceLandmarker::Create(
     const TrtFaceLandmarkerConfig& cfg) {
+  g_trt_logger.log_cb = cfg.log_cb;
   auto self = std::unique_ptr<TrtFaceLandmarker>(new TrtFaceLandmarker());
   self->impl_ = std::make_unique<Impl>();
   self->impl_->cfg = cfg;
@@ -321,7 +343,7 @@ std::unique_ptr<TrtFaceLandmarker> TrtFaceLandmarker::Create(
         "Expected files:\n"
         "  " +
         det_onnx + "\n  " + lm_onnx;
-    std::fprintf(stderr, "[TRT] %s\n", self->last_error_.c_str());
+    if (g_trt_logger.log_cb) g_trt_logger.log_cb(TrtLogLevel::ERROR, fmt_str("[TRT] %s", self->last_error_.c_str()));
     return nullptr;
   }
 
@@ -356,16 +378,17 @@ std::unique_ptr<TrtFaceLandmarker> TrtFaceLandmarker::Create(
   auto& I = *self->impl_;
 
   auto log_engine = [](nvinfer1::ICudaEngine* engine, const char* label) {
+    if (!g_trt_logger.log_cb) return;
     int nb = engine->getNbIOTensors();
-    std::fprintf(stderr, "[TRT] Engine %s has %d tensors:\n", label, nb);
+    g_trt_logger.log_cb(TrtLogLevel::DEBUG, fmt_str("[TRT] Engine %s has %d tensors:", label, nb));
     for (int i = 0; i < nb; ++i) {
       auto name = engine->getIOTensorName(i);
       auto dims = engine->getTensorShape(name);
       auto mode = engine->getTensorIOMode(name);
-      std::fprintf(stderr, "  %d: %s (%s) shape=", i, name,
-                   mode == nvinfer1::TensorIOMode::kINPUT ? "IN" : "OUT");
-      for (int d = 0; d < dims.nbDims; ++d) std::fprintf(stderr, "%d ", dims.d[d]);
-      std::fprintf(stderr, "\n");
+      std::string dstr;
+      for (int d = 0; d < dims.nbDims; ++d) dstr += std::to_string(dims.d[d]) + (d == dims.nbDims - 1 ? "" : "x");
+      g_trt_logger.log_cb(TrtLogLevel::DEBUG, fmt_str("  %d: %s (%s) shape=%s", i, name,
+                         mode == nvinfer1::TensorIOMode::kINPUT ? "IN" : "OUT", dstr.c_str()));
     }
   };
   log_engine(I.det_engine, "Detector");
@@ -389,8 +412,10 @@ std::unique_ptr<TrtFaceLandmarker> TrtFaceLandmarker::Create(
   I.h_det_scores.resize(896);
   I.h_lm_landmarks.resize(478 * 3);
 
-  std::fprintf(stderr, "[TRT] Face landmarker initialized (det=%dx%d, lm=%dx%d, fp16=%d)\n",
-               I.DET_W, I.DET_H, I.LM_W, I.LM_H, (int)cfg.fp16);
+  if (g_trt_logger.log_cb) {
+    g_trt_logger.log_cb(TrtLogLevel::INFO, fmt_str("[TRT] Face landmarker initialized (det=%dx%d, lm=%dx%d, fp16=%d)",
+                        I.DET_W, I.DET_H, I.LM_W, I.LM_H, (int)cfg.fp16));
+  }
   return self;
 }
 
@@ -575,7 +600,10 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
       I.has_prev_roi = true;
     }
 
-    std::fprintf(stderr, "[DEBUG Tracker] use_tracking=%d, cx=%.1f, cy=%.1f, side=%.1f\n", (int)use_tracking, cx, cy, side);
+    if (g_trt_logger.log_cb) {
+      g_trt_logger.log_cb(TrtLogLevel::DEBUG, fmt_str("[DEBUG Tracker] use_tracking=%d, cx=%.1f, cy=%.1f, side=%.1f",
+                          (int)use_tracking, cx, cy, side));
+    }
 
     // Build Affine Matrix (Forward: Dest -> Src)
     float cos_a = std::cos(angle);
@@ -667,7 +695,9 @@ GpuLandmarkResult TrtFaceLandmarker::detect(const uint8_t* d_rgba, int width,
       float lm_w = lm_xmax - lm_xmin;
       float lm_h = lm_ymax - lm_ymin;
       if (lm_w < 0.05f || lm_h < 0.05f) {
-        std::fprintf(stderr, "[TRT] Landmark sanity check failed (bbox %.3fx%.3f vs min 0.05) — resetting tracking\n", lm_w, lm_h);
+        if (g_trt_logger.log_cb) {
+          g_trt_logger.log_cb(TrtLogLevel::WARNING, fmt_str("[TRT] Landmark sanity check failed (bbox %.3fx%.3f vs min 0.05) — resetting tracking", lm_w, lm_h));
+        }
         I.has_prev_landmarks = false;
         I.has_prev_roi = false;
         I.filter_cx.first_time = true;

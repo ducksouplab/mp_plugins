@@ -6,6 +6,11 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <functional>
+
+// Log levels matching GStreamer levels for convenience
+enum class TrtLogLevel { ERROR, WARNING, INFO, DEBUG, LOG };
+using LogCallback = std::function<void(TrtLogLevel, const std::string&)>;
 
 struct TaskModels {
   std::vector<uint8_t> face_detector;        // BlazeFace short-range detector
@@ -14,4 +19,4 @@ struct TaskModels {
 
 // Extract the two TFLite models from a .task file.
 // Returns nullopt on failure.
-std::optional<TaskModels> extract_task_models(const std::string& task_path);
+std::optional<TaskModels> extract_task_models(const std::string& task_path, LogCallback log_cb = nullptr);

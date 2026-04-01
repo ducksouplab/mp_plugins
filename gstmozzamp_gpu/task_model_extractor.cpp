@@ -69,11 +69,20 @@ static std::optional<std::vector<uint8_t>> find_landmarks(unzFile zf) {
   return std::nullopt;
 }
 
-std::optional<TaskModels> extract_task_models(const std::string& task_path) {
+std::optional<TaskModels> extract_task_models(const std::string& task_path, LogCallback log_cb) {
+  auto fmt_log = [&](TrtLogLevel level, const char* format, ...) {
+    if (!log_cb) return;
+    va_list args;
+    va_start(args, format);
+    char buf[1024];
+    std::vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+    log_cb(level, std::string("[task_extractor] ") + buf);
+  };
+
   unzFile zf = unzOpen(task_path.c_str());
   if (!zf) {
-    std::fprintf(stderr, "[task_extractor] Cannot open ZIP: %s\n",
-                 task_path.c_str());
+    fmt_log(TrtLogLevel::ERROR, "Cannot open ZIP: %s", task_path.c_str());
     return std::nullopt;
   }
 
@@ -84,7 +93,7 @@ std::optional<TaskModels> extract_task_models(const std::string& task_path) {
       unz_file_info info;
       unzGetCurrentFileInfo(zf, &info, fname, sizeof(fname), nullptr, 0,
                             nullptr, 0);
-      std::fprintf(stderr, "[task_extractor] ZIP entry: %s (%lu bytes)\n",
+      fmt_log(TrtLogLevel::DEBUG, "ZIP entry: %s (%lu bytes)",
                    fname, (unsigned long)info.uncompressed_size);
     } while (unzGoToNextFile(zf) == UNZ_OK);
   }
@@ -93,9 +102,7 @@ std::optional<TaskModels> extract_task_models(const std::string& task_path) {
 
   auto det = find_detector(zf);
   if (!det) {
-    std::fprintf(stderr,
-                 "[task_extractor] face_detector.tflite not found in %s\n",
-                 task_path.c_str());
+    fmt_log(TrtLogLevel::ERROR, "face_detector.tflite not found in %s", task_path.c_str());
     unzClose(zf);
     return std::nullopt;
   }
@@ -103,10 +110,7 @@ std::optional<TaskModels> extract_task_models(const std::string& task_path) {
 
   auto lm = find_landmarks(zf);
   if (!lm) {
-    std::fprintf(stderr,
-                 "[task_extractor] face_landmarks_detector.tflite not found "
-                 "in %s\n",
-                 task_path.c_str());
+    fmt_log(TrtLogLevel::ERROR, "face_landmarks_detector.tflite not found in %s", task_path.c_str());
     unzClose(zf);
     return std::nullopt;
   }
@@ -114,9 +118,7 @@ std::optional<TaskModels> extract_task_models(const std::string& task_path) {
 
   unzClose(zf);
 
-  std::fprintf(stderr,
-               "[task_extractor] Extracted detector=%zu bytes, "
-               "landmarks=%zu bytes\n",
+  fmt_log(TrtLogLevel::INFO, "Extracted detector=%zu bytes, landmarks=%zu bytes",
                models.face_detector.size(), models.face_landmarks.size());
   return models;
 }

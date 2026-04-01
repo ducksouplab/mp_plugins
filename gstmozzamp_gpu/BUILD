@@ -45,6 +45,7 @@ cc_library(
     srcs = ["task_model_extractor.cpp"],
     hdrs = ["task_model_extractor.h"],
     copts = ["-fPIC"],
+    deps = ["@cuda//:cuda_headers"],
     linkopts = ["-lminizip", "-lz"],
 )
 

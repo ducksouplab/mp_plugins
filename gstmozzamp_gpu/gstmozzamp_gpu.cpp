@@ -421,6 +421,15 @@ static gboolean gst_mozza_mp_gpu_start(GstBaseTransform* base) {
   trt_cfg.max_faces = self->max_faces;
   trt_cfg.fp16 = true;
   trt_cfg.gpu_id = self->gpu_id;
+  trt_cfg.log_cb = [self](TrtLogLevel level, const std::string& msg) {
+    switch (level) {
+      case TrtLogLevel::ERROR:   GST_ERROR_OBJECT(self, "%s", msg.c_str()); break;
+      case TrtLogLevel::WARNING: GST_WARNING_OBJECT(self, "%s", msg.c_str()); break;
+      case TrtLogLevel::INFO:    GST_INFO_OBJECT(self, "%s", msg.c_str()); break;
+      case TrtLogLevel::DEBUG:   GST_DEBUG_OBJECT(self, "%s", msg.c_str()); break;
+      case TrtLogLevel::LOG:     GST_LOG_OBJECT(self, "%s", msg.c_str()); break;
+    }
+  };
 
   auto t0 = std::chrono::steady_clock::now();
   self->trt_lm = TrtFaceLandmarker::Create(trt_cfg);
@@ -658,6 +667,7 @@ static GstFlowReturn gst_mozza_mp_gpu_transform_frame_ip(
   // Export landmarks for comparison/validation
   if (const char* lm_out = std::getenv("LANDMARK_OUTPUT_FILE")) {
     if (FILE* lmf = std::fopen(lm_out, "a")) {
+      GST_LOG_OBJECT(self, "Dumping landmarks to %s", lm_out);
       std::fprintf(lmf, "Frame %llu Face 0:\n", (unsigned long long)self->frame_count);
       for (const auto& p : L)
         std::fprintf(lmf, "%.6f,%.6f,0.000000\n", p.x / (float)W, p.y / (float)H);

@@ -552,6 +552,7 @@ static GstFlowReturn gst_mozza_mp_transform_frame_ip(GstVideoFilter* vf,
   // Export landmarks for comparison/validation
   if (const char* lm_out = std::getenv("LANDMARK_OUTPUT_FILE")) {
     if (FILE* lmf = std::fopen(lm_out, "a")) {
+      GST_LOG_OBJECT(self, "Dumping landmarks to %s", lm_out);
       std::fprintf(lmf, "Frame %llu Face 0:\n", (unsigned long long)self->frame_count);
       for (const auto& p : L)
         std::fprintf(lmf, "%.6f,%.6f,0.000000\n", p.x / (float)W, p.y / (float)H);
