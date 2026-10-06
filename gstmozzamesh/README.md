@@ -86,6 +86,12 @@ Shipped in `bases/` (copies of face-transforms' frozen files):
 New or improved transformations are new basis files (v2, ...): no change to
 the plugin.
 
+**Attribution:** the bases are for non-commercial research. If you use them,
+cite RAVDESS (Livingstone & Russo 2018) for the AU basis and Oosterhof &
+Todorov (2008) for the trait basis; full references in
+[bases/README.md](bases/README.md). The files contain only averaged landmark
+displacements, no material from those databases.
+
 ## In DuckSoup
 
 Name the effect and control it with the player API:
