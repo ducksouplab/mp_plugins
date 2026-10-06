@@ -76,12 +76,14 @@ COPY gstmozzamp/       gstmozzamp/
 COPY gstshared/        gstshared/
 COPY imgwarp/          gstmozzamp/imgwarp/
 COPY gstmozzamp_gpu/   gstmozzamp_gpu/
+COPY gstmozzamesh/     gstmozzamesh/
 
 # GStreamer headers for Bazel
 RUN bash -eux <<'BASH'
 mkdir -p third_party/sysroot_gst/include \
          third_party/sysroot_gst/lib/glib-2.0/include
 cp -a /opt/gstreamer/include/gstreamer-1.0 third_party/sysroot_gst/include/
+cp -a /opt/gstreamer/include/json-glib-1.0 third_party/sysroot_gst/include/
 cp -a /usr/include/glib-2.0               third_party/sysroot_gst/include/
 cp -a /usr/lib/x86_64-linux-gnu/glib-2.0/include/* \
       third_party/sysroot_gst/lib/glib-2.0/include/
@@ -115,6 +117,14 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
 )
+cc_library(
+    name = "json_glib",
+    hdrs = glob(["include/json-glib-1.0/**/*.h"]),
+    includes = ["include/json-glib-1.0"],
+    deps = [":glib"],
+    linkopts = ["-L/opt/gstreamer/lib/x86_64-linux-gnu", "-ljson-glib-1.0"],
+    visibility = ["//visibility:public"],
+)
 EOF
 BASH
 
@@ -140,12 +150,14 @@ RUN set -eux; \
     //gstshared:libmp_runtime.so \
     //gstfacelandmarks:libgstfacelandmarks.so \
     //gstmozzamp:libgstmozzamp.so \
-    //gstmozzamp_gpu:libgstmozzampgpu.so; \
+    //gstmozzamp_gpu:libgstmozzampgpu.so \
+    //gstmozzamesh:libgstmozzamesh.so; \
   bbin="$(bazel info -c opt bazel-bin)"; \
   install -D -m0755 "$bbin/gstshared/libmp_runtime.so"               /out/lib/libmp_runtime.so; \
   install -D -m0755 "$bbin/gstfacelandmarks/libgstfacelandmarks.so" /out/plugins/libgstfacelandmarks.so; \
   install -D -m0755 "$bbin/gstmozzamp/libgstmozzamp.so"             /out/plugins/libgstmozzamp.so; \
-  install -D -m0755 "$bbin/gstmozzamp_gpu/libgstmozzampgpu.so"     /out/plugins/libgstmozzamp_gpu.so
+  install -D -m0755 "$bbin/gstmozzamp_gpu/libgstmozzampgpu.so"     /out/plugins/libgstmozzamp_gpu.so; \
+  install -D -m0755 "$bbin/gstmozzamesh/libgstmozzamesh.so"         /out/plugins/libgstmozzamesh.so
 
 # ── Stage 2: Runtime ──
 FROM ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0 AS runtime

@@ -10,7 +10,7 @@ If you are new to this project, start with our **[Tutorial Notebook](tutorial/tu
 ---
 
 ## What is this?
-This repository provides three primary GStreamer filters:
+This repository provides four GStreamer filters:
 
 ### 1. `facelandmarks` (CPU)
 A lightweight overlay that detects 478 face landmarks and draws them on the video stream. Useful for verifying that the AI correctly "sees" the face before applying deformations.
@@ -58,6 +58,22 @@ A high-performance version of the transformer using NVIDIA TensorRT and custom C
 | `beta` | float | 0.05 | OneEuroFilter beta (higher = less lag). |
 | `show-landmarks`| boolean | false | Draw landmarks over the deformed image. |
 | `gpu-id` | int | 0 | CUDA device index. |
+
+### 4. `mozza_mesh` (CPU) — new
+Face transformations from **validated displacement fields** with a **mesh warp**: facial action units
+(AU1, AU2, AU4, AU5, AU7, AU12, AU15, AU20, AU43) and morphology (perceived dominance, trustworthiness,
+threat, from Oosterhof & Todorov 2008). Each transformation has its own amplitude, controllable live from
+DuckSoup (`controlFx("fx", "au12", 0.8, 500)`), and any number combine. Transformations are loaded from
+basis files (`gstmozzamesh/bases/`), so new ones need no code change. Independent of `mozza_mp`, which is
+unchanged.
+
+```bash
+mozza_mesh model=face_landmarker.task basis=au_basis_v1.json,trait_basis_v1.json au12=0.8 dom=2
+```
+
+**Docs:** [gstmozzamesh/README.md](gstmozzamesh/README.md) (properties, basis files, DuckSoup usage, build,
+tests) · **Tutorial:** [tutorial/mozza_mesh_tutorial.ipynb](tutorial/mozza_mesh_tutorial.ipynb) ·
+**Python wrapper:** `mesh_process.py` (`transform_image`, `transform_video` with keyframes).
 
 ## How it works
 The project uses a two-stage pipeline:
