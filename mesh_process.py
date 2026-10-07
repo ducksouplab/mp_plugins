@@ -20,6 +20,7 @@ pass plugin_dir=None once the image contains it.
 """
 import json
 import os
+import re
 import subprocess
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -27,8 +28,11 @@ DEFAULT_BASIS = ("gstmozzamesh/bases/au_basis_v1.json", "gstmozzamesh/bases/trai
 GST_PATHS = "/usr/local/lib/gstreamer-1.0:/opt/gstreamer/lib/x86_64-linux-gnu/gstreamer-1.0"
 
 
-def _docker(cmd, input_path, output_path, plugin_dir, image, env=(), verbose=False):
-    """Run `cmd` in the image with /in, /out and the repo (/repo) mounted."""
+def _docker(cmd, input_path, output_path, plugin_dir, image, env=(), verbose=False, show=None):
+    """Run `cmd` in the image with /in, /out and the repo (/repo) mounted.
+
+    show: if given, print only the output lines containing this string (e.g. "TIMING").
+    """
     in_dir, out_dir = os.path.dirname(os.path.abspath(input_path)), os.path.dirname(os.path.abspath(output_path))
     os.makedirs(out_dir, exist_ok=True)
     plugin_path = GST_PATHS if plugin_dir is None else f"/repo/{plugin_dir}:{GST_PATHS}"
@@ -44,6 +48,10 @@ def _docker(cmd, input_path, output_path, plugin_dir, image, env=(), verbose=Fal
     r = subprocess.run(args, capture_output=not verbose, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"mozza_mesh failed:\n{(r.stderr or '')[-3000:]}")
+    if show and not verbose:
+        for line in ((r.stdout or "") + (r.stderr or "")).splitlines():
+            if show in line:
+                print(re.sub(r"\x1b\[[0-9;]*m", "", line[line.index(show):]))
 
 
 def _props(amplitudes, basis, model, show_landmarks, fold_guard, smooth):
@@ -89,5 +97,6 @@ def transform_video(input_path, output_path, amplitudes=None, keyframes=None, ba
                f"/in/{os.path.basename(input_path)} /out/{os.path.basename(output_path)} "
                f"--model /repo/{model} --basis {','.join('/repo/' + b for b in basis)} "
                f"--keyframes '{kf}' " + " ".join(f"--prop {p}" for p in extra))
-    _docker(cmd, input_path, output_path, plugin_dir, image, env=env, verbose=verbose or bool(log_every))
+    _docker(cmd, input_path, output_path, plugin_dir, image, env=env, verbose=verbose,
+            show="TIMING" if log_every else None)
     return output_path
