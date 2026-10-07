@@ -6,7 +6,8 @@ except ImportError:
     print("Numpy missing, script needs to be run inside docker.")
     sys.exit(1)
 
-cpu = open('assets/dyn_cpu.txt').read().strip().split('Frame')
+# usage: python3 scripts/analyze_rigidity.py <landmarks.txt>  (as written with LANDMARK_OUTPUT_FILE)
+cpu = open(sys.argv[1] if len(sys.argv) > 1 else 'landmarks_cpu.txt').read().strip().split('Frame')
 for f in cpu:
     if not f.strip(): continue
     lines = f.split('\n')[1:]

@@ -21,7 +21,7 @@ files are copied in [`bases/`](bases/).
 
 ```bash
 gst-launch-1.0 filesrc location=face.jpg ! jpegdec ! videoconvert ! video/x-raw,format=RGBA ! \
-  mozza_mesh model=face_landmarker.task \
+  mozza_mesh model=models/face_landmarker.task \
              basis=au_basis_v1.json,trait_basis_v1.json \
              au12=0.8 dom=2 ! \
   videoconvert ! pngenc ! filesink location=out.png

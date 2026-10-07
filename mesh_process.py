@@ -61,7 +61,7 @@ def _props(amplitudes, basis, model, show_landmarks, fold_guard, smooth):
             f"show-landmarks={'true' if show_landmarks else 'false'} smooth-landmarks={'true' if smooth else 'false'}")
 
 
-def transform_image(input_path, output_path, amplitudes=None, basis=DEFAULT_BASIS, model="face_landmarker.task",
+def transform_image(input_path, output_path, amplitudes=None, basis=DEFAULT_BASIS, model="models/face_landmarker.task",
                     show_landmarks=False, fold_guard=5.0, image="mp_plugins:latest",
                     plugin_dir="gstmozzamesh/out", verbose=False):
     """Transform one image (.jpg or .png) and write a .png."""
@@ -75,7 +75,7 @@ def transform_image(input_path, output_path, amplitudes=None, basis=DEFAULT_BASI
 
 
 def transform_video(input_path, output_path, amplitudes=None, keyframes=None, basis=DEFAULT_BASIS,
-                    model="face_landmarker.task", show_landmarks=False, fold_guard=5.0, smooth=True,
+                    model="models/face_landmarker.task", show_landmarks=False, fold_guard=5.0, smooth=True,
                     image="mp_plugins:latest", plugin_dir="gstmozzamesh/out", log_every=0, verbose=False):
     """Transform an .mp4 (H.264) video; writes .mp4 (video only).
 
@@ -139,7 +139,7 @@ def side_by_side_video(original_path, transformed_path, output_path, keyframes=N
         f1, f2 = cv2.resize(f1, (w, height)), cv2.resize(f2, (w, height))
         t = k / fps
         amps = amplitudes_at(keyframes, t) if keyframes else (amplitudes or {})
-        label = "  ".join(f"{n}={v:+.1f}" for n, v in amps.items()) or "no transformation"
+        label = "  ".join(f"{n}={v:+.1f}" for n, v in amps.items() if abs(v) >= 0.05) or "no transformation"
         for f, text in ((f1, "original"), (f2, label)):
             cv2.putText(f, text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
             cv2.putText(f, text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)

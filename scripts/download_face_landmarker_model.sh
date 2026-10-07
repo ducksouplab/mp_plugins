@@ -7,7 +7,8 @@ set -euo pipefail
 DEFAULT_URL="https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 
 MODEL_URL="${1:-$DEFAULT_URL}"
-DEST_DIR="${2:-.}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST_DIR="${2:-$ROOT_DIR/models}"   # default: models/ in the repository
 DEST="${DEST_DIR}/$(basename "$MODEL_URL")"
 
 echo "Downloading Face Landmarker model..."

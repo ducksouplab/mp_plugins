@@ -2,26 +2,27 @@
 # test_plugins.sh - Automated verification for Mediapipe GStreamer plugins
 #
 # Usage:
-#   ./test_plugins.sh [plugin_path]
+#   ./scripts/test_plugins.sh [plugin_path]
 #
 # If plugin_path is omitted, it assumes they are in the default GStreamer path
 # or GST_PLUGIN_PATH is already set.
 
 set -e
+cd "$(dirname "${BASH_SOURCE[0]}")/.."   # run from the repository root, wherever the script is called from
 
 # Colors for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-MODEL="face_landmarker.task"
+MODEL="models/face_landmarker.task"
 INPUT="media/inputs/test_image.jpg"
 OUT_DIR="media/outputs/test_plugins"
 mkdir -p "$OUT_DIR"
-DEFORM="smile.dfm"
+DEFORM="dfm/smile.dfm"
 
 if [ ! -f "$MODEL" ]; then
-    echo -e "${RED}Error: $MODEL not found. Run download_face_landmarker_model.sh first.${NC}"
+    echo -e "${RED}Error: $MODEL not found. Run scripts/download_face_landmarker_model.sh first.${NC}"
     exit 1
 fi
 
@@ -83,8 +84,8 @@ echo -n "Testing mozza_mp_gpu (GPU)... "
 # Check if GPU is available
 if nvidia-smi > /dev/null 2>&1; then
     # Ensure ONNX models exist
-    if [ ! -f "face_detector.onnx" ] || [ ! -f "face_landmarks.onnx" ]; then
-        echo -e "${RED}FAILED${NC} (Missing ONNX models. Run python3 convert_models.py $MODEL)"
+    if [ ! -f "models/face_detector.onnx" ] || [ ! -f "models/face_landmarks.onnx" ]; then
+        echo -e "${RED}FAILED${NC} (Missing ONNX models. Run python3 scripts/convert_models.py $MODEL)"
     else
         gst-launch-1.0 -q filesrc location="$INPUT" ! jpegdec ! videoconvert ! video/x-raw,format=RGBA ! \
           mozza_mp_gpu model_path="$MODEL" deform="$DEFORM" alpha=2.0 ! \

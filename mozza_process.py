@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 
+DEFAULT_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "face_landmarker.task")
+
 def run_command(cmd, verbose=False):
     if verbose:
         print(f"Executing: {' '.join(cmd)}")
@@ -17,7 +19,7 @@ def transform_file(
     input_path,
     output_path,
     mode="gpu",
-    model_path="face_landmarker.task",
+    model_path=DEFAULT_MODEL,
     deform=None,
     alpha=1.0,
     mls_alpha=1.4,
@@ -191,7 +193,7 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Print verbose output")
 
     # Plugin properties
-    parser.add_argument("--model-path", default="face_landmarker.task", help="Path to .task model")
+    parser.add_argument("--model-path", default=DEFAULT_MODEL, help="Path to .task model")
     parser.add_argument("--deform", help="Path to .dfm deformation file")
     parser.add_argument("--alpha", type=float, default=1.0, help="Deformation intensity")
     parser.add_argument("--mls-alpha", type=float, default=1.4, help="MLS rigidity")

@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # generate_landmarks.sh
 # Runs both CPU and GPU plugins on a test image, exports 478 landmarks per frame,
-# then compares them with compare_landmarks.py.
+# then compares them with scripts/compare_landmarks.py.
 #
 # Usage:
-#   ./generate_landmarks.sh [image] [face_task] [frames]
+#   ./scripts/generate_landmarks.sh [image] [frames]
 #
 # Defaults:
 #   image      = media/inputs/test_image.jpg
-#   face_task  = env/face_landmarker.task
 #   frames     = 30  (duplicate the still image this many times for stable detection)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # repository root
 
-IMAGE="${1:-$SCRIPT_DIR/media/inputs/test_image.jpg}"
+IMAGE="${1:-$ROOT_DIR/media/inputs/test_image.jpg}"
 FRAMES="${2:-30}"
 
-CPU_OUT="$SCRIPT_DIR/landmarks_cpu.txt"
-GPU_OUT="$SCRIPT_DIR/landmarks_gpu.txt"
+CPU_OUT="$ROOT_DIR/landmarks_cpu.txt"
+GPU_OUT="$ROOT_DIR/landmarks_gpu.txt"
 
 # Base image (has GStreamer + CPU plugin only; no CUDA runtime)
 BASE_IMAGE="ducksouplab/debian-gstreamer:deb12-with-plugins-cuda12.2-gst1.28.0"
@@ -37,10 +37,10 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 check_prereqs() {
   [ -f "$IMAGE" ] || die "Test image not found: $IMAGE"
-  [ -f "$SCRIPT_DIR/env/face_landmarker.task" ] || die "Model not found: env/face_landmarker.task"
+  [ -f "$ROOT_DIR/models/face_landmarker.task" ] || die "Model not found: models/face_landmarker.task"
   docker info &>/dev/null || die "Docker not available"
-  [ -f "$SCRIPT_DIR/mp-out/plugins/libgstmozzamp.so" ]     || die "libgstmozzamp.so missing — rebuild first"
-  [ -f "$SCRIPT_DIR/mp-out/plugins/libgstmozzamp_gpu.so" ] || die "libgstmozzamp_gpu.so missing — rebuild first"
+  [ -f "$ROOT_DIR/mp-out/plugins/libgstmozzamp.so" ]     || die "libgstmozzamp.so missing — rebuild first"
+  [ -f "$ROOT_DIR/mp-out/plugins/libgstmozzamp_gpu.so" ] || die "libgstmozzamp_gpu.so missing — rebuild first"
   docker image inspect "$TEST_IMAGE" &>/dev/null || die "$TEST_IMAGE not found — rebuild with Dockerfile.test"
 }
 
@@ -50,7 +50,7 @@ run_cpu_plugin() {
   rm -f "$out_file"
 
   docker run --rm \
-    -v "$SCRIPT_DIR:/work" \
+    -v "$ROOT_DIR:/work" \
     -v "$IMAGE:/work_image:ro" \
     -e GST_PLUGIN_PATH="$BASE_PLUGIN_PATH" \
     -e LD_LIBRARY_PATH="$BASE_LIB_PATH" \
@@ -65,7 +65,7 @@ run_cpu_plugin() {
     '!' videoconvert \
     '!' "video/x-raw,format=RGBA" \
     '!' mozza_mp \
-        model="/work/env/face_landmarker.task" \
+        model="/work/models/face_landmarker.task" \
         no-warp=true \
     '!' fakesink sync=false
 
@@ -79,16 +79,16 @@ run_gpu_plugin() {
   local out_file="$1"
   # mozza_mp_gpu needs TensorRT/CUDA runtime; use the pre-built test image.
   # The test image has plugins in /usr/local/lib/gstreamer-1.0 and LD paths set.
-  # We still mount $SCRIPT_DIR for model files and the output landmark file.
+  # We still mount $ROOT_DIR for model files and the output landmark file.
   echo "→ Running mozza_mp_gpu / GPU (${FRAMES} frames)..."
   rm -f "$out_file"
 
   # mozza_mp_gpu uses model= property (path to face_landmarker.task);
   # ONNX models (face_detector.onnx, face_landmarks.onnx) must be in same dir.
-  local model_path="/work/env/face_landmarker.task"
+  local model_path="/work/models/face_landmarker.task"
 
   docker run --rm --gpus all \
-    -v "$SCRIPT_DIR:/work" \
+    -v "$ROOT_DIR:/work" \
     -v "$IMAGE:/work_image:ro" \
     -e LANDMARK_OUTPUT_FILE="/work/$(basename "$out_file")" \
     -e GST_DEBUG="2" \
@@ -125,5 +125,5 @@ run_gpu_plugin "$GPU_OUT"
 
 echo ""
 echo "=== Comparison ==="
-cd "$SCRIPT_DIR"
-python3 compare_landmarks.py
+cd "$ROOT_DIR"
+python3 scripts/compare_landmarks.py

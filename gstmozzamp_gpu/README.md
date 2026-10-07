@@ -26,7 +26,7 @@ GstBuffer(RGBA) → cudaMemcpy H2D → TensorRT inference (1-2ms) → CUDA MLS w
 
 ```bash
 pip install tf2onnx tensorflow
-python3 convert_models.py face_landmarker.task
+python3 scripts/convert_models.py models/face_landmarker.task
 ```
 
 This creates `face_detector.onnx` and `face_landmarks.onnx` alongside the `.task` file.

@@ -8,7 +8,7 @@ The .task file is a ZIP containing two TFLite models:
 
 Usage:
   pip install tf2onnx tensorflow-lite flatbuffers
-  python3 convert_models.py face_landmarker.task
+  python3 scripts/convert_models.py models/face_landmarker.task
 
 The ONNX files will be created in the same directory as the .task file.
 Place them alongside the .task file for the mozza_mp_gpu plugin to find.

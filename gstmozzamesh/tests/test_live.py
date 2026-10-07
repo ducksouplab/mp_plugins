@@ -85,7 +85,7 @@ def run(video, model, basis, live):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
-    ap.add_argument("--model", default="face_landmarker.task")
+    ap.add_argument("--model", default="models/face_landmarker.task")
     ap.add_argument("--basis", required=True)
     ap.add_argument("--sheet", default="gstmozzamesh/tests/live_sheet.ppm")
     a = ap.parse_args()

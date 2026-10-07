@@ -1,6 +1,7 @@
 #!/bin/bash
 # generate_all_outputs.sh - Runs all plugins on all assets and saves to media/outputs/batch/
 
+cd "$(dirname "${BASH_SOURCE[0]}")/.."   # run from the repository root, wherever the script is called from
 OUT=media/outputs/batch
 mkdir -p "$OUT"
 
@@ -25,7 +26,7 @@ for asset in "${ASSETS[@]}"; do
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
     echo "Mode: $mode | Input: $asset -> $OUT/$target_name"
-    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "landmarks" --model-path face_landmarker.task
+    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "landmarks" --model-path models/face_landmarker.task
 
     # Mode 2: CPU Smile (Comparison)
     echo "--------------------------------------------------------"
@@ -33,7 +34,7 @@ for asset in "${ASSETS[@]}"; do
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
     echo "Mode: $mode | Input: $asset -> $OUT/$target_name"
-    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "cpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
+    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "cpu" --deform dfm/smile.dfm --show-landmarks false --model-path models/face_landmarker.task --warp-mode per-group-roi --alpha 2.0
 
     # Mode 3: GPU Smile (Comparison)
     echo "--------------------------------------------------------"
@@ -41,7 +42,7 @@ for asset in "${ASSETS[@]}"; do
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
     echo "Mode: $mode | Input: $asset -> $OUT/$target_name"
-    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "gpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
+    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "gpu" --deform dfm/smile.dfm --show-landmarks false --model-path models/face_landmarker.task --warp-mode per-group-roi --alpha 2.0
 
 done
 
