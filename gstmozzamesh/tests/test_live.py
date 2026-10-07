@@ -14,7 +14,7 @@ Also saves a contact sheet of some output frames and reports per-frame time.
 
   docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src \\
     -e LD_LIBRARY_PATH=/src/mp-out/lib:/usr/local/lib:/opt/gstreamer/lib/x86_64-linux-gnu \\
-    mozza-mesh-dev python3 gstmozzamesh/tests/test_live.py assets/video_example.mp4 \\
+    mozza-mesh-dev python3 gstmozzamesh/tests/test_live.py media/inputs/video_example.mp4 \\
       --basis gstmozzamesh/bases/au_basis_v1.json,gstmozzamesh/bases/trait_basis_v1.json
 """
 import argparse

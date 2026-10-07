@@ -15,7 +15,9 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 MODEL="face_landmarker.task"
-INPUT="test_face.jpg"
+INPUT="media/inputs/test_image.jpg"
+OUT_DIR="media/outputs/test_plugins"
+mkdir -p "$OUT_DIR"
 DEFORM="smile.dfm"
 
 if [ ! -f "$MODEL" ]; then
@@ -58,9 +60,9 @@ echo "--- Running Functional Tests ---"
 echo -n "Testing facelandmarks (CPU)... "
 gst-launch-1.0 -q filesrc location="$INPUT" ! jpegdec ! videoconvert ! video/x-raw,format=RGBA ! \
   facelandmarks model="$MODEL" ! \
-  videoconvert ! pngenc ! filesink location="test_out_landmarks.png"
-if [ -s "test_out_landmarks.png" ]; then
-    echo -e "${GREEN}PASSED${NC} (output: test_out_landmarks.png)"
+  videoconvert ! pngenc ! filesink location="$OUT_DIR/test_out_landmarks.png"
+if [ -s "$OUT_DIR/test_out_landmarks.png" ]; then
+    echo -e "${GREEN}PASSED${NC} (output: $OUT_DIR/test_out_landmarks.png)"
 else
     echo -e "${RED}FAILED${NC}"
 fi
@@ -69,9 +71,9 @@ fi
 echo -n "Testing mozza_mp (CPU)... "
 gst-launch-1.0 -q filesrc location="$INPUT" ! jpegdec ! videoconvert ! video/x-raw,format=RGBA ! \
   mozza_mp model="$MODEL" deform="$DEFORM" alpha=2.0 ! \
-  videoconvert ! pngenc ! filesink location="test_out_mozza_cpu.png"
-if [ -s "test_out_mozza_cpu.png" ]; then
-    echo -e "${GREEN}PASSED${NC} (output: test_out_mozza_cpu.png)"
+  videoconvert ! pngenc ! filesink location="$OUT_DIR/test_out_mozza_cpu.png"
+if [ -s "$OUT_DIR/test_out_mozza_cpu.png" ]; then
+    echo -e "${GREEN}PASSED${NC} (output: $OUT_DIR/test_out_mozza_cpu.png)"
 else
     echo -e "${RED}FAILED${NC}"
 fi
@@ -86,9 +88,9 @@ if nvidia-smi > /dev/null 2>&1; then
     else
         gst-launch-1.0 -q filesrc location="$INPUT" ! jpegdec ! videoconvert ! video/x-raw,format=RGBA ! \
           mozza_mp_gpu model_path="$MODEL" deform="$DEFORM" alpha=2.0 ! \
-          videoconvert ! pngenc ! filesink location="test_out_mozza_gpu.png"
-        if [ -s "test_out_mozza_gpu.png" ]; then
-            echo -e "${GREEN}PASSED${NC} (output: test_out_mozza_gpu.png)"
+          videoconvert ! pngenc ! filesink location="$OUT_DIR/test_out_mozza_gpu.png"
+        if [ -s "$OUT_DIR/test_out_mozza_gpu.png" ]; then
+            echo -e "${GREEN}PASSED${NC} (output: $OUT_DIR/test_out_mozza_gpu.png)"
         else
             echo -e "${RED}FAILED${NC}"
         fi

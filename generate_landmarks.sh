@@ -7,7 +7,7 @@
 #   ./generate_landmarks.sh [image] [face_task] [frames]
 #
 # Defaults:
-#   image      = assets/test_image.jpg
+#   image      = media/inputs/test_image.jpg
 #   face_task  = env/face_landmarker.task
 #   frames     = 30  (duplicate the still image this many times for stable detection)
 
@@ -15,7 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-IMAGE="${1:-$SCRIPT_DIR/assets/test_image.jpg}"
+IMAGE="${1:-$SCRIPT_DIR/media/inputs/test_image.jpg}"
 FRAMES="${2:-30}"
 
 CPU_OUT="$SCRIPT_DIR/landmarks_cpu.txt"

@@ -1,10 +1,11 @@
 #!/bin/bash
-# generate_all_outputs.sh - Runs all plugins on all assets and saves to output/
+# generate_all_outputs.sh - Runs all plugins on all assets and saves to media/outputs/batch/
 
-mkdir -p output
+OUT=media/outputs/batch
+mkdir -p "$OUT"
 
 # List of assets to process
-ASSETS=("assets/dynamic_video.mp4" "assets/test_image.jpg" "assets/video_example.mp4")
+ASSETS=("media/inputs/dynamic_video.mp4" "media/inputs/test_image.jpg" "media/inputs/video_example.mp4")
 
 echo "Starting batch transformation of all assets..."
 
@@ -23,27 +24,27 @@ for asset in "${ASSETS[@]}"; do
     mode="landmarks"
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
-    echo "Mode: $mode | Input: $asset -> output/$target_name"
-    python3 mozza_process.py --input "$asset" --output "output/$target_name" --mode "landmarks" --model-path face_landmarker.task
+    echo "Mode: $mode | Input: $asset -> $OUT/$target_name"
+    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "landmarks" --model-path face_landmarker.task
 
     # Mode 2: CPU Smile (Comparison)
     echo "--------------------------------------------------------"
     mode="cpu_smile"
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
-    echo "Mode: $mode | Input: $asset -> output/$target_name"
-    python3 mozza_process.py --input "$asset" --output "output/$target_name" --mode "cpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
+    echo "Mode: $mode | Input: $asset -> $OUT/$target_name"
+    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "cpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
 
     # Mode 3: GPU Smile (Comparison)
     echo "--------------------------------------------------------"
     mode="gpu_smile"
     target_name="${name}_${mode}.mp4"
     if [[ "$ext" =~ ^(jpg|jpeg)$ ]]; then target_name="${name}_${mode}.png"; fi
-    echo "Mode: $mode | Input: $asset -> output/$target_name"
-    python3 mozza_process.py --input "$asset" --output "output/$target_name" --mode "gpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
+    echo "Mode: $mode | Input: $asset -> $OUT/$target_name"
+    python3 mozza_process.py --input "$asset" --output "$OUT/$target_name" --mode "gpu" --deform smile.dfm --show-landmarks false --model-path face_landmarker.task --warp-mode per-group-roi --alpha 2.0
 
 done
 
 echo "--------------------------------------------------------"
-echo "All transformations complete. Files available in 'output/'"
-ls -F output/
+echo "All transformations complete. Files available in '$OUT/'"
+ls -F "$OUT"/

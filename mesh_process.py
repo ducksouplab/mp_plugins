@@ -3,10 +3,10 @@
 
     from mesh_process import transform_image, transform_video
 
-    transform_image("assets/test_image.jpg", "smile.png", {"AU12": 0.8})
-    transform_image("assets/test_image.jpg", "dominant.png", {"DOM_o": 2.5})
-    transform_video("assets/video_example.mp4", "out.mp4", {"AU12": 0.6})          # constant
-    transform_video("assets/video_example.mp4", "out.mp4",                          # changing over time
+    transform_image("media/inputs/test_image.jpg", "smile.png", {"AU12": 0.8})
+    transform_image("media/inputs/test_image.jpg", "dominant.png", {"DOM_o": 2.5})
+    transform_video("media/inputs/video_example.mp4", "out.mp4", {"AU12": 0.6})          # constant
+    transform_video("media/inputs/video_example.mp4", "out.mp4",                          # changing over time
                     keyframes=[(0, {"AU12": 0}), (1.0, {"AU12": 1}), (2.0, {"AU12": 0, "DOM_o": 2})])
 
 Amplitudes are a dict {field: value}: AU fields (AU1, AU2, AU4, AU5, AU7,

@@ -32,8 +32,8 @@ tutorial `../tutorial/mozza_mesh_tutorial.ipynb`:
 
 ```python
 from mesh_process import transform_image, transform_video
-transform_image("assets/test_image.jpg", "smile.png", {"AU12": 0.8})
-transform_video("assets/video_example.mp4", "out.mp4", keyframes=[(0, {"AU12": 0}), (1, {"AU12": 1})])
+transform_image("media/inputs/test_image.jpg", "smile.png", {"AU12": 0.8})
+transform_video("media/inputs/video_example.mp4", "out.mp4", keyframes=[(0, {"AU12": 0}), (1, {"AU12": 1})])
 ```
 
 ## Properties
