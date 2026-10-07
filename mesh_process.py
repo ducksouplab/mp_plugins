@@ -100,3 +100,64 @@ def transform_video(input_path, output_path, amplitudes=None, keyframes=None, ba
     _docker(cmd, input_path, output_path, plugin_dir, image, env=env, verbose=verbose,
             show="TIMING" if log_every else None)
     return output_path
+
+
+def amplitudes_at(keyframes, t):
+    """Amplitudes at time t (seconds), linearly interpolated between keyframes (as transform_video)."""
+    names = sorted({k for _, a in keyframes for k in a})
+    if t <= keyframes[0][0]:
+        a = keyframes[0][1]
+        return {k: a.get(k, 0.0) for k in names}
+    for (t0, a0), (t1, a1) in zip(keyframes, keyframes[1:]):
+        if t <= t1:
+            w = (t - t0) / (t1 - t0) if t1 > t0 else 1.0
+            return {k: (1 - w) * a0.get(k, 0.0) + w * a1.get(k, 0.0) for k in names}
+    a = keyframes[-1][1]
+    return {k: a.get(k, 0.0) for k in names}
+
+
+def side_by_side_video(original_path, transformed_path, output_path, keyframes=None, amplitudes=None,
+                       height=360, image="mp_plugins:latest"):
+    """Original | transformed, side by side, with the current amplitudes written on each frame.
+
+    Needs OpenCV (pip install opencv-python). The H.264 encoding runs in the plugins image,
+    so the .mp4 plays in browsers and notebooks whatever OpenCV build is installed.
+    """
+    os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")  # silence decoder warnings on damaged frames
+    import cv2
+
+    a, b = cv2.VideoCapture(original_path), cv2.VideoCapture(transformed_path)
+    fps = a.get(cv2.CAP_PROP_FPS) or 25.0
+    tmp = os.path.splitext(os.path.abspath(output_path))[0] + "_tmp.avi"
+    writer, k = None, 0
+    while True:
+        ok1, f1 = a.read()
+        ok2, f2 = b.read()
+        if not (ok1 and ok2):
+            break
+        w = int(round(f1.shape[1] * height / f1.shape[0])) // 2 * 2
+        f1, f2 = cv2.resize(f1, (w, height)), cv2.resize(f2, (w, height))
+        t = k / fps
+        amps = amplitudes_at(keyframes, t) if keyframes else (amplitudes or {})
+        label = "  ".join(f"{n}={v:+.1f}" for n, v in amps.items()) or "no transformation"
+        for f, text in ((f1, "original"), (f2, label)):
+            cv2.putText(f, text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
+            cv2.putText(f, text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        frame = cv2.hconcat([f1, f2])
+        if writer is None:
+            writer = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"MJPG"), fps, (frame.shape[1], frame.shape[0]))
+        writer.write(frame)
+        k += 1
+    a.release()
+    b.release()
+    if writer is None:
+        raise RuntimeError("could not read the videos")
+    writer.release()
+    cmd = (f"gst-launch-1.0 -q filesrc location=/out/{os.path.basename(tmp)} ! avidemux ! jpegdec ! videoconvert ! "
+           f"x264enc speed-preset=medium ! video/x-h264,profile=main ! mp4mux ! "
+           f"filesink location=/out/{os.path.basename(output_path)}")
+    try:
+        _docker(cmd, tmp, output_path, None, image)
+    finally:
+        os.remove(tmp)
+    return output_path

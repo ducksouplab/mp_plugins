@@ -110,10 +110,11 @@ gst-launch-1.0 filesrc location=face.jpg ! jpegdec ! videoconvert ! video/x-raw,
 
 **From Python** (runs the plugin in Docker, like `mozza_process.py`):
 ```python
-from mesh_process import transform_image, transform_video
+from mesh_process import transform_image, transform_video, side_by_side_video
 transform_image("assets/test_image.jpg", "smile.png", {"AU12": 0.8})
-transform_video("assets/video_example.mp4", "out.mp4",
-                keyframes=[(0, {"AU12": 0}), (1, {"AU12": 1})])  # smile ramps in over 1 s
+keys = [(0, {"DOM_o": -3}), (2.6, {"DOM_o": 3})]  # dominance sweeps from -3 to +3 SD
+transform_video("assets/video_example.mp4", "out.mp4", keyframes=keys)
+side_by_side_video("assets/video_example.mp4", "out.mp4", "compare.mp4", keyframes=keys)  # original | transformed, labelled
 ```
 
 **Basis files** (`gstmozzamesh/bases/`): each file is a set of named fields. A field gives, for each of MediaPipe's 468 face-mesh landmarks, its displacement `[dx, dy]` at amplitude 1, in face units (relative to the line between the outer eye corners), so it works for any face size, position and in-plane rotation. Every frame, the plugin computes `displacement = Σ amplitude × field`, converts it to pixels and warps. New or improved transformations are new basis files (v2, ...), with no change to the plugin code. How the v1 fields were built and validated is documented in [face-transforms](https://github.com/Pablo-Arias/face-transforms).
